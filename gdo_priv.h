@@ -165,10 +165,35 @@ extern "C"
         esp_timer_handle_t timer;
     } gdo_sched_evt_args_t;
 
+#ifdef USE_GDOLIB_SWSERIAL
+    typedef enum
+    {
+        SERIAL_EVENT_DATA = GDO_EVENT_MAX + 1,
+        SERIAL_EVENT_MAX,
+    } serial_event_type_t;
+
+    typedef struct
+    {
+        serial_event_type_t event;
+        size_t size;
+        uint8_t packet[20];
+    } serial_event_t;
+
+    typedef struct
+    {
+        TaskHandle_t sendingTask;
+        size_t size;
+        uint8_t packet[20];
+    } serial_transmit_t;
+#endif
+
     typedef union
     {
         gdo_event_type_t gdo_event;
         uart_event_t uart_event;
+#ifdef USE_GDOLIB_SWSERIAL
+        serial_event_t serial_event;
+#endif
     } gdo_event_t;
 
     const char *cmd_to_string(gdo_command_t cmd);
