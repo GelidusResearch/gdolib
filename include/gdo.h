@@ -165,12 +165,13 @@ extern "C"
         bool ttc_enabled;                     // ttc active
         bool toggle_only;                     // Used when the door opener only supports the toggle command.
         bool tof_timer_active;                // ToF interval timer active
-        bool obst_test_pulse_timer_active;        // Obstruction test pulse output pin timer active
+        bool obst_test_pulse_timer_active;    // Obstruction test pulse output pin timer active
         uint16_t openings;                    // Number of openings
         uint16_t ttc_seconds;                 // Time to close in seconds
         uint16_t open_ms;                     // Time door takes to open from fully closed in milliseconds
         uint16_t close_ms;                    // Time door takes to close from fully open in milliseconds
         uint16_t vehicle_parked_threshold;    // Distance thats considered a parked state
+        uint16_t vehicle_parked_threshold_variance; // The variance used to determine if the vehicle is parked 
         int32_t door_position;                // Door position in percentage (0-10000) [OPEN-CLOSED]
         int32_t door_target;                  // Door target position in percentage (0-10000) [OPEN-CLOSED]
         uint32_t client_id;                   // Client ID
@@ -487,6 +488,12 @@ extern "C"
      * @param vehicle_parked_threshold distance measure that triggers a parked state
      */
     esp_err_t gdo_set_vehicle_parked_threshold(uint16_t vehicle_parked_threshold);
+
+    /**
+     * @brief Sets the vehicle parked threshold variance in cm
+     * @param vehicle_parked_threshold_variance within this variance the state will be stable 
+     */
+    esp_err_t gdo_set_vehicle_parked_threshold_variance(uint16_t vehicle_parked_threshold_variance);
 
 #ifdef __cplusplus
 }

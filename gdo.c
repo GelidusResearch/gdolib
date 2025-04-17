@@ -101,6 +101,7 @@ static gdo_status_t g_status = {
     .obst_test_pulse_timer_active = false,
     .obst_test_pulse_timer_usecs = 50000,
     .vehicle_parked_threshold = 100,
+    .vehicle_parked_threshold_variance=5,
 };
 
 static bool g_protocol_forced;
@@ -534,7 +535,7 @@ esp_err_t gdo_start(gdo_event_callback_t event_callback, void *user_arg)
 #ifdef CONFIG_FREERTOS_UNICORE
     if (xTaskCreate(gdo_contact_task, "gdo_close_ISR", 4096, &info, 16, &gdo_contact_task_handle[GDO_CONTACT_DOOR_CLOSE - 1]) != pdPASS)
 #else
-    if (xTaskCreatePinnedToCore(gdo_contact_task, "gdo_close_ISR", 4096, &info, 16, &gdo_contact_task_handle[GDO_CONTACT_DOOR_CLOSE - 1], 1) != pdPASS)
+    if (xTaskCreatePinnedToCore(gdo_contact_task, "gdo_close_ISR", 4096, &info, 15, &gdo_contact_task_handle[GDO_CONTACT_DOOR_CLOSE - 1], 1) != pdPASS)
 #endif
     {
       return ESP_ERR_NO_MEM;
@@ -2814,6 +2815,18 @@ esp_err_t gdo_set_vehicle_parked_threshold(uint16_t vehicle_parked_threshold)
 {
   esp_err_t err = ESP_OK;
   g_status.vehicle_parked_threshold = vehicle_parked_threshold;
+  return err;
+}
+
+/**
+ * @brief Set the parked threshold dynamically.
+ * @param ms The minimum time in milliseconds.
+ * @return ESP_OK on success, ESP_ERR_INVALID_ARG if the time is invalid.
+ */
+esp_err_t gdo_set_vehicle_parked_threshold_variance(uint16_t vehicle_parked_threshold_variance)
+{
+  esp_err_t err = ESP_OK;
+  g_status.vehicle_parked_threshold_variance = vehicle_parked_threshold_variance;
   return err;
 }
 
