@@ -66,6 +66,7 @@ static esp_err_t schedule_command(gdo_sched_cmd_args_t *cmd_args, uint32_t time_
 static esp_err_t schedule_event(gdo_event_type_t event, uint32_t time_us);
 static esp_err_t gdo_v1_toggle_cmd(gdo_v1_command_t cmd);
 static esp_err_t queue_event(gdo_event_t event);
+static esp_err_t send_event(gdo_event_type_t event);
 
 /****************************** GLOBAL VARIABLES **********************************/
 
@@ -1345,6 +1346,8 @@ done:
   {
     g_status.protocol = GDO_PROTOCOL_UNKNOWN;
   }
+  // We use queue event rather than send event to ensure that the callback
+  // function is called from the main thread (same thread as all other callbacks).
   queue_event((gdo_event_t){GDO_EVENT_SYNC_COMPLETE});
   gdo_sync_task_handle = NULL;
   vTaskDelete(NULL);
@@ -1465,7 +1468,8 @@ static void door_position_sync_timer_cb(void *arg)
   {
     esp_timer_stop(door_position_sync_timer);
   }
-
+  // We use queue event rather than send event to ensure that the callback
+  // function is called from the main thread (same thread as all other callbacks).
   queue_event((gdo_event_t){GDO_EVENT_DOOR_POSITION_UPDATE});
 }
 
@@ -1943,12 +1947,12 @@ static void decode_packet(uint8_t *packet)
   else if (cmd == GDO_CMD_UPDATE_TTC)
   {
     update_ttc((byte1 << 8) | byte2);
-    queue_event((gdo_event_t){GDO_EVENT_UPDATE_TTC});
+    send_event(GDO_CB_EVENT_UPDATE_TTC);
   }
   else if (cmd == GDO_CMD_SET_TTC)
   {
     update_ttc((byte1 << 8) | byte2);
-    queue_event((gdo_event_t){GDO_EVENT_SET_TTC});
+    send_event(GDO_CB_EVENT_SET_TTC);
   }
   else if (cmd == GDO_CMD_PAIRED_DEVICES)
   {
@@ -1961,7 +1965,7 @@ static void decode_packet(uint8_t *packet)
   else if ((g_status.door == GDO_DOOR_STATE_OPEN || g_status.door == GDO_DOOR_STATE_CLOSING) && cmd == GDO_CMD_OBST_1)
   {
     g_status.door = GDO_DOOR_STATE_OPEN; // if the obstruction sensor tripped the door will go back to open state.
-    queue_event((gdo_event_t){GDO_EVENT_DOOR_POSITION_UPDATE});
+    send_event(GDO_CB_EVENT_DOOR_POSITION);
   }
   else
   {
@@ -2198,6 +2202,7 @@ static void gdo_main_task(void *arg)
           if (now - tx_message.sent_ms > 3000)
           {
             err = ESP_ERR_TIMEOUT;
+            ESP_LOGE(TAG, "ESP_ERR_TIMEOUT: %dms, (%d - %d)", now - tx_message.sent_ms, now, tx_message.sent_ms);
           }
           else
           {
@@ -2233,7 +2238,7 @@ static void gdo_main_task(void *arg)
           }
           else
           {
-            ESP_LOGD(TAG, "Sent command: %s", g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2 ? cmd_to_string(tx_message.cmd) : v1_cmd_to_string(tx_message.cmd));
+            ESP_LOGI(TAG, "Sent command: %s", g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2 ? cmd_to_string(tx_message.cmd) : v1_cmd_to_string(tx_message.cmd));
           }
           last_tx_time = esp_timer_get_time() / 1000;
         }
@@ -2319,14 +2324,14 @@ static void update_door_state(const gdo_door_state_t door_state)
         g_status.door == GDO_DOOR_STATE_CLOSED)
     {
       start_opening = esp_timer_get_time();
+      ESP_LOGD(TAG, "Record start time of door opening: %lld", start_opening / 1000LL);
     }
     if (door_state == GDO_DOOR_STATE_OPEN &&
         g_status.door == GDO_DOOR_STATE_OPENING && start_opening != 0)
     {
-      g_status.open_ms =
-          (uint16_t)((esp_timer_get_time() - start_opening) / 1000ULL);
-      ESP_LOGV(TAG, "Open time: %u", g_status.open_ms);
-      queue_event((gdo_event_t){GDO_EVENT_DOOR_OPEN_DURATION_MEASUREMENT});
+      g_status.open_ms = (uint16_t)((esp_timer_get_time() - start_opening) / 1000LL);
+      ESP_LOGD(TAG, "Open time: %u", g_status.open_ms);
+      send_event(GDO_CB_EVENT_OPEN_DURATION_MEASUREMENT);
     }
     if (door_state == GDO_DOOR_STATE_STOPPED)
     {
@@ -2340,14 +2345,14 @@ static void update_door_state(const gdo_door_state_t door_state)
         g_status.door == GDO_DOOR_STATE_OPEN)
     {
       start_closing = esp_timer_get_time();
+      ESP_LOGD(TAG, "Record start time of door closing: %lld", start_closing / 1000LL);
     }
     if (door_state == GDO_DOOR_STATE_CLOSED &&
         g_status.door == GDO_DOOR_STATE_CLOSING && start_closing != 0)
     {
-      g_status.close_ms =
-          (uint16_t)((esp_timer_get_time() - start_closing) / 1000ULL);
-      ESP_LOGV(TAG, "Close time: %u", g_status.close_ms);
-      queue_event((gdo_event_t){GDO_EVENT_DOOR_CLOSE_DURATION_MEASUREMENT});
+      g_status.close_ms = (uint16_t)((esp_timer_get_time() - start_closing) / 1000LL);
+      ESP_LOGD(TAG, "Close time: %u", g_status.close_ms);
+      send_event(GDO_CB_EVENT_CLOSE_DURATION_MEASUREMENT);
     }
     if (door_state == GDO_DOOR_STATE_STOPPED)
     {
@@ -2387,14 +2392,19 @@ static void update_door_state(const gdo_door_state_t door_state)
     else if (door_state == GDO_DOOR_STATE_CLOSED)
     {
       g_status.door_position = 10000;
-      if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2)
+      if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2 && g_status.door != GDO_DOOR_STATE_CLOSED)
       {
+        // Only update openings if status is changing to closed (ie, not steady state closed)
         get_openings();
       }
     }
 
     g_door_start_moving_ms = 0;
-    g_status.motor = GDO_MOTOR_STATE_OFF;
+    if (g_status.motor != GDO_MOTOR_STATE_OFF)
+    {
+      g_status.motor = GDO_MOTOR_STATE_OFF;
+      send_event(GDO_CB_EVENT_MOTOR);
+    }
   }
 
   if (g_status.door == GDO_DOOR_STATE_UNKNOWN &&
@@ -2412,7 +2422,7 @@ static void update_door_state(const gdo_door_state_t door_state)
     g_status.door = door_state;
     previous_door_position = g_status.door_position;
     previous_door_target = g_status.door_target;
-    queue_event((gdo_event_t){GDO_EVENT_DOOR_POSITION_UPDATE});
+    send_event(GDO_CB_EVENT_DOOR_POSITION);
   }
   else
   {
@@ -2521,7 +2531,7 @@ inline static void update_light_state(gdo_light_state_t light_state)
   {
     ESP_LOGD(TAG, "Light state: %s", gdo_light_state_str[light_state]);
     g_status.light = light_state;
-    queue_event((gdo_event_t){GDO_EVENT_LIGHT_UPDATE});
+    send_event(GDO_CB_EVENT_LIGHT);
   }
   else
   {
@@ -2539,7 +2549,7 @@ inline static void update_lock_state(gdo_lock_state_t lock_state)
   {
     ESP_LOGD(TAG, "Lock state: %s", gdo_lock_state_str[lock_state]);
     g_status.lock = lock_state;
-    queue_event((gdo_event_t){GDO_EVENT_LOCK_UPDATE});
+    send_event(GDO_CB_EVENT_LOCK);
   }
   else
   {
@@ -2559,6 +2569,9 @@ update_obstruction_state(gdo_obstruction_state_t obstruction_state)
   {
     ESP_LOGD(TAG, "Obstruction state: %s", gdo_obstruction_state_str[obstruction_state]);
     g_status.obstruction = obstruction_state;
+    // This function can be called from obstruction timer... therefore...
+    // We use queue event rather than send event to ensure that the callback
+    // function is called from the main thread (same thread as all other callbacks).
     queue_event((gdo_event_t){GDO_EVENT_OBST});
   }
   else
@@ -2579,11 +2592,11 @@ inline static void update_learn_state(gdo_learn_state_t learn_state)
   if (learn_state != g_status.learn)
   {
     g_status.learn = learn_state;
-    queue_event((gdo_event_t){GDO_EVENT_LEARN_UPDATE});
-  }
-  if (learn_state == GDO_LEARN_STATE_INACTIVE && g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2)
-  {
-    get_paired_devices(GDO_PAIRED_DEVICE_TYPE_ALL);
+    send_event(GDO_CB_EVENT_LEARN);
+    if (learn_state == GDO_LEARN_STATE_INACTIVE && g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2)
+    {
+      get_paired_devices(GDO_PAIRED_DEVICE_TYPE_ALL);
+    }
   }
 }
 
@@ -2608,6 +2621,11 @@ inline static void handle_light_action(gdo_light_action_t light_action)
       light_state = light_state == GDO_LIGHT_STATE_OFF ? GDO_LIGHT_STATE_ON
                                                        : GDO_LIGHT_STATE_OFF;
     }
+    // We get toggle when wall panel light button pressed and released
+    g_status.button = GDO_BUTTON_STATE_PRESSED;
+    send_event(GDO_CB_EVENT_BUTTON);
+    g_status.button = GDO_BUTTON_STATE_RELEASED;
+    send_event(GDO_CB_EVENT_BUTTON);
     break;
   default:
     light_state = GDO_LIGHT_STATE_MAX;
@@ -2657,7 +2675,7 @@ inline static void update_motor_state(gdo_motor_state_t motor_state)
   if (motor_state != g_status.motor)
   {
     g_status.motor = motor_state;
-    queue_event((gdo_event_t){GDO_EVENT_MOTOR_UPDATE});
+    send_event(GDO_CB_EVENT_MOTOR);
   }
 }
 
@@ -2670,14 +2688,14 @@ inline static void update_button_state(gdo_button_state_t button_state)
   ESP_LOGD(TAG, "Button state: %s", gdo_button_state_str[button_state]);
   if (button_state == GDO_BUTTON_STATE_RELEASED)
   {
+    // Why are we calling get status with every button release?
+    // This creates a lot of unnecessary traffic on serial comms.
     get_status();
   }
 
-  if (button_state != g_status.button)
-  {
-    g_status.button = button_state;
-    queue_event((gdo_event_t){GDO_EVENT_BUTTON_UPDATE});
-  }
+  // Send event even if state is the same, so callback always notfied even if repeated multiple times
+  g_status.button = button_state;
+  send_event(GDO_CB_EVENT_BUTTON);
 }
 
 /**
@@ -2697,12 +2715,16 @@ inline static void update_motion_state(gdo_motion_state_t motion_state)
   if (g_status.motion != motion_state)
   {
     g_status.motion = motion_state;
+    // This function can be called from motion timer (started above)... therefore...
+    // We use queue event rather than send event to ensure that the callback
+    // function is called from the main thread (same thread as all other callbacks).
     queue_event((gdo_event_t){GDO_EVENT_MOTION_UPDATE});
-  }
 
-  if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2)
-  {
-    get_status();
+    if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2 && motion_state == GDO_MOTION_STATE_DETECTED && g_status.light == GDO_LIGHT_STATE_OFF)
+    {
+      // If motion detected and light is off, then request status to update light state (which may have turned on)
+      get_status();
+    }
   }
 }
 
@@ -2721,7 +2743,7 @@ inline static void update_openings(uint8_t flag, uint16_t count)
     if (g_status.openings != count)
     {
       g_status.openings = count;
-      queue_event((gdo_event_t){GDO_EVENT_OPENINGS_UPDATE});
+      send_event(GDO_CB_EVENT_OPENINGS);
     }
   }
   // Ignoring openings, not from our request
@@ -2754,6 +2776,9 @@ esp_err_t gdo_set_time_to_close(uint16_t time_to_close)
   uint8_t nibble = 1;
   update_ttc(time_to_close);
   queue_command(GDO_CMD_SET_TTC, nibble, byte1, byte2);
+  // This can be called from unknown thread... therefore...
+  // We use queue event rather than send event to ensure that the callback
+  // function is called from the main thread (same thread as all other callbacks).
   queue_event((gdo_event_t){GDO_EVENT_SET_TTC});
   return err;
 }
@@ -2839,7 +2864,7 @@ inline static void update_paired_devices(gdo_paired_device_type_t type,
 
   if (g_status.synced && changed)
   {
-    queue_event((gdo_event_t){GDO_EVENT_PAIRED_DEVICES_UPDATE});
+    send_event(GDO_CB_EVENT_PAIRED_DEVICES);
   }
 }
 
@@ -2853,7 +2878,7 @@ inline static void update_battery_state(gdo_battery_state_t battery_state)
   if (battery_state != g_status.battery)
   {
     g_status.battery = battery_state;
-    queue_event((gdo_event_t){GDO_EVENT_BATTERY_UPDATE});
+    send_event(GDO_CB_EVENT_BATTERY);
   }
 }
 
@@ -2876,6 +2901,18 @@ inline static esp_err_t queue_event(gdo_event_t event)
     ESP_LOGE(TAG, "Event Queue Full!");
     return ESP_ERR_NO_MEM;
   }
+  return ESP_OK;
+}
+
+/**
+ * @brief Immediately calls event callback.
+ * @param event The event to send.
+ * @return ESP_OK
+ */
+inline static esp_err_t send_event(gdo_event_type_t event)
+{
+  if (g_event_callback)
+    g_event_callback(&g_status, event, g_user_cb_arg);
   return ESP_OK;
 }
 
@@ -2912,6 +2949,8 @@ esp_err_t gdo_set_vehicle_parked_threshold_variance(uint16_t vehicle_parked_thre
  */
 inline static void tof_timer_cb(void *arg)
 {
+  // We use queue event rather than send event to ensure that the callback
+  // function is called from the main thread (same thread as all other callbacks).
   queue_event((gdo_event_t){GDO_EVENT_TOF_TIMER});
 }
 
