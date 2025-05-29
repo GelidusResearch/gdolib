@@ -120,6 +120,7 @@ const char *gdo_protocol_type_str[] = {
     "Security+ 1.0",
     "Security+ 2.0",
     "Security+ 1.0 with smart panel",
+    "Dry Contact",
 };
 
 const char *cmd_to_string(gdo_command_t cmd)
@@ -216,7 +217,7 @@ void print_buffer(gdo_protocol_type_t protocol, uint8_t *buf, bool is_tx)
 {
     if (protocol == GDO_PROTOCOL_DRY_CONTACT)
     {
-        ESP_LOGV(TAG, "Dry Contact set pin %2d to %1d", buf[0], buf[1]);
+        ESP_LOGD(TAG, "Dry Contact set pin %2d to %1d", buf[0], buf[1]);
     }
     else if (protocol == GDO_PROTOCOL_SEC_PLUS_V2)
     {

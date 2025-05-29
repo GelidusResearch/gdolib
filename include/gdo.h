@@ -171,7 +171,7 @@ extern "C"
         uint16_t open_ms;                     // Time door takes to open from fully closed in milliseconds
         uint16_t close_ms;                    // Time door takes to close from fully open in milliseconds
         uint16_t vehicle_parked_threshold;    // Distance thats considered a parked state
-        uint16_t vehicle_parked_threshold_variance; // The variance used to determine if the vehicle is parked 
+        uint16_t vehicle_parked_threshold_variance; // The variance used to determine if the vehicle is parked
         int32_t door_position;                // Door position in percentage (0-10000) [OPEN-CLOSED]
         int32_t door_target;                  // Door target position in percentage (0-10000) [OPEN-CLOSED]
         uint32_t client_id;                   // Client ID
@@ -193,6 +193,7 @@ extern "C"
         gpio_num_t rf_rx_pin;             // RF RX pin
         gpio_num_t dc_open_pin;           // dry contact open sensor input pin
         gpio_num_t dc_close_pin;          // dry contact close sensor input pin
+        gpio_num_t dc_toggle_pin;         // dry contact toggle input pin
         gpio_num_t dc_discrete_open_pin;  // dry contact open door output pin
         gpio_num_t dc_discrete_close_pin; // dry contact close door output pin
         uint32_t dc_debounce_ms;          // dry contact debounce timer duration in milliseconds.
@@ -483,7 +484,7 @@ extern "C"
      * @param interval the interval time in micro seconds
      * @param enabled the flag to enable or disable the timer on gdo_start
      * @return ESP_OK on success, ESP_ERR_INVALID_ARG if the interval is less than 1000
-     * @note Init config->obst_tp_pin with the desired GPIO pin 
+     * @note Init config->obst_tp_pin with the desired GPIO pin
     */
     esp_err_t gdo_set_obst_test_pulse_timer(uint32_t interval, bool enabled);
 
@@ -495,7 +496,7 @@ extern "C"
 
     /**
      * @brief Sets the vehicle parked threshold variance in cm
-     * @param vehicle_parked_threshold_variance within this variance the state will be stable 
+     * @param vehicle_parked_threshold_variance within this variance the state will be stable
      */
     esp_err_t gdo_set_vehicle_parked_threshold_variance(uint16_t vehicle_parked_threshold_variance);
 

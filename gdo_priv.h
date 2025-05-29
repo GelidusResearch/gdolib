@@ -31,6 +31,7 @@ extern "C"
 #define RX_BUFFER_SIZE 160
 #define GDO_PACKET_SIZE ((g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2) ? 19UL : 2UL)
 #define GDO_DRY_CONTACT_DEBOUNCE_MS 50
+#define GDO_DRY_CONTACT_PULSE_WIDTH_MS 200
 
     typedef enum
     {
@@ -140,6 +141,7 @@ extern "C"
         GDO_CONTACT_UNKNOWN = 0,
         GDO_CONTACT_DOOR_OPEN,
         GDO_CONTACT_DOOR_CLOSE,
+        GDO_CONTACT_DOOR_TOGGLE,
         GDO_CONTACT_MAX,
     } gdo_contact_type_t;
 

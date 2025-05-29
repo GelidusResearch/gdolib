@@ -1655,7 +1655,7 @@ static esp_err_t gdo_dc_toggle_pin(gpio_num_t pin)
         .door_cmd = false,
         .nibble = 0,
     };
-    return schedule_command(&args, 500 * 1000);
+    return schedule_command(&args, GDO_DRY_CONTACT_PULSE_WIDTH_MS * 1000);
   }
   return err;
 }
@@ -3026,7 +3026,7 @@ static void gdo_contact_task(void *arg)
       .mode = GPIO_MODE_INPUT,
       .pull_up_en = GPIO_PULLUP_ENABLE,
       .pull_down_en = GPIO_PULLDOWN_DISABLE,
-      .intr_type = GPIO_INTR_ANYEDGE,
+      .intr_type = GPIO_INTR_NEGEDGE,
   };
 
   err = gpio_config(&io_conf);
