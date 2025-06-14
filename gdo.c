@@ -1634,11 +1634,7 @@ static esp_err_t gdo_v1_toggle_cmd(gdo_v1_command_t cmd)
   esp_err_t err = queue_v1_command(cmd);
   if (err == ESP_OK)
   {
-    gdo_sched_cmd_args_t args = {
-        .cmd = (uint32_t)cmd + 1, // release is always 1 higher than press
-        .door_cmd = false,
-    };
-    return schedule_command(&args, g_tx_delay_ms * 1000);
+    err = queue_v1_command(cmd + 1); // release is always 1 higher than press
   }
 
   return err;
