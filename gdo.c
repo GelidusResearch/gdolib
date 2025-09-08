@@ -2373,7 +2373,7 @@ static void update_door_state(const gdo_door_state_t door_state)
   {
     int64_t open_duration = esp_timer_get_time() - start_opening;
     open_counter++;
-    open_average += (open_duration - open_average) / (AVERAGE_OVER < open_counter) ? AVERAGE_OVER : open_counter;
+    open_average += (open_duration - open_average) / ((AVERAGE_OVER < open_counter) ? AVERAGE_OVER : open_counter);
     g_status.open_ms = (uint16_t)(open_average / 1000LL);
     ESP_LOGD(TAG, "Door open duration: %lldms, average: %ums", open_duration / 1000LL, g_status.open_ms);
     send_event(GDO_CB_EVENT_OPEN_DURATION_MEASUREMENT);
@@ -2387,7 +2387,7 @@ static void update_door_state(const gdo_door_state_t door_state)
   {
     int64_t close_duration = esp_timer_get_time() - start_closing;
     close_counter++;
-    close_average += (close_duration - close_average) / (AVERAGE_OVER < close_counter) ? AVERAGE_OVER : close_counter;
+    close_average += (close_duration - close_average) / ((AVERAGE_OVER < close_counter) ? AVERAGE_OVER : close_counter);
     g_status.close_ms = (uint16_t)(close_average / 1000LL);
     ESP_LOGD(TAG, "Door close duration: %lldms, average: %ums", close_duration / 1000LL, g_status.close_ms);
     send_event(GDO_CB_EVENT_CLOSE_DURATION_MEASUREMENT);
