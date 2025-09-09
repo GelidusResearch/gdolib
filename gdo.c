@@ -127,6 +127,11 @@ static uint32_t g_tx_delay_ms = GDO_MIN_COMMAND_INTERVAL_MS;
 static uint32_t g_ttc_delay_s = 0;
 static portMUX_TYPE gdo_spinlock = portMUX_INITIALIZER_UNLOCKED;
 
+static gdo_obstruction_stats_t obst_stats = {
+    .count = 0,
+    .last_pulse_micros = 0,
+};
+
 const static uint32_t OBST_CHECK_PERIOD = 100; // Milliseconds between checks for obstruction
 const static uint32_t OBST_LOWER_LIMIT = 1;    // Number of pulses to consider clear state
 
@@ -187,18 +192,19 @@ esp_err_t gdo_init(const gdo_config_t *config)
     return err;
   }
 
-  if ((g_config.obst_in_pin > 0) && !g_config.obst_from_status)
+  if (!g_config.obst_from_status && g_config.obst_in_pin > 0)
   {
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << g_config.obst_in_pin),
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_NEGEDGE,
+        .intr_type = GPIO_INTR_ANYEDGE,
     };
-    static gdo_obstruction_stats_t obst_stats;
+
+    // Initialize the global obstruction stats
     portMUX_INITIALIZE(&obst_stats.mux);
-    obst_stats.sleep_micros = 0;
+    obst_stats.last_pulse_micros = esp_timer_get_time();
 
     err = gpio_config(&io_conf);
     if (err != ESP_OK)
@@ -223,10 +229,13 @@ esp_err_t gdo_init(const gdo_config_t *config)
     timer_args.dispatch_method = ESP_TIMER_TASK;
     timer_args.name = "obst_timer";
     err = esp_timer_create(&timer_args, &obst_timer);
+    if (err != ESP_OK)
+    {
+      return err;
+    }
 
     // Check the obstruction pulse counts every 100ms
     err = esp_timer_start_periodic(obst_timer, OBST_CHECK_PERIOD * 1000);
-
     if (err != ESP_OK)
     {
       return err;
@@ -1382,56 +1391,56 @@ static void IRAM_ATTR obst_isr_handler(void *arg)
 
 /**
  * @brief Runs every 100ms and checks the count of obstruction interrupts.
- * @details 1 or more interrupts in 100ms is considered clear, 0 with the pin low
- * is asleep, and 0 with the pin high is obstructed. When the obstruction state
- * changes an event of GDO_EVENT_OBST is queued.
+ * @details If pulses are detected within 100ms, state is CLEAR and timer is reset.
+ * If no pulses for >700ms since last pulse, state becomes OBSTRUCTED.
+ * When the obstruction state changes an event of GDO_EVENT_OBST is queued.
  */
 static void obst_timer_cb(void *arg)
 {
   gdo_obstruction_stats_t *stats = (gdo_obstruction_stats_t *)arg;
-  int64_t micros_now = esp_timer_get_time();
   gdo_obstruction_state_t obs_state = g_status.obstruction;
+  uint64_t micros_now = esp_timer_get_time();
+  bool has_pulses = false;
 
-  portENTER_CRITICAL(&stats->mux);
+  portENTER_CRITICAL(&gdo_spinlock);
   if (g_status.obst_override)
   {
-    // If override is enabled, we assume the sensor is clear
-    if (obs_state != GDO_OBSTRUCTION_STATE_CLEAR)
-      obs_state = GDO_OBSTRUCTION_STATE_CLEAR;
-    stats->sleep_micros = micros_now; // reset sleep time
-    portEXIT_CRITICAL(&stats->mux);
+    stats->count = 0;
+    stats->last_pulse_micros = micros_now;
+    portEXIT_CRITICAL(&gdo_spinlock);
+    if (g_status.obstruction != GDO_OBSTRUCTION_STATE_CLEAR)
+    {
+      update_obstruction_state(GDO_OBSTRUCTION_STATE_CLEAR);
+    }
     return;
   }
 
   if (stats->count >= OBST_LOWER_LIMIT)
   {
-    // Pulses being received, sensor is working and clear
-    obs_state = GDO_OBSTRUCTION_STATE_CLEAR;
-    stats->count = 0;
-    portEXIT_CRITICAL(&stats->mux);
+    has_pulses = true;
+    stats->last_pulse_micros = micros_now;
   }
-  else if (stats->count == 0)
+  stats->count = 0;
+  portEXIT_CRITICAL(&gdo_spinlock);
+
+  if (has_pulses)
   {
-    // If there have been no pulses then the pin is steady high or low.
-    if (gpio_get_level(g_config.obst_in_pin))
-    {
-      // sensor is asleep
-      stats->sleep_micros = micros_now;
-    }
-    else
-    {
-      // if last asleep more than 700ms ago, then there is an obstruction present
-      if (micros_now - stats->sleep_micros > 700 * 1000)
-      {
-        obs_state = GDO_OBSTRUCTION_STATE_OBSTRUCTED;
-      }
-    }
-    portEXIT_CRITICAL(&stats->mux);
+    // If we have pulses, we are definitely clear
+    obs_state = GDO_OBSTRUCTION_STATE_CLEAR;
   }
   else
   {
-    // count is between one and OBST_LOWER_LIMIT, leave state unchanged
-    portEXIT_CRITICAL(&stats->mux);
+    // No pulses in the last 100ms. Check how long it's been since the last pulse.
+    // If it's been more than 700ms, we are obstructed.
+    if (micros_now - stats->last_pulse_micros > 700 * 1000)
+    {
+      obs_state = GDO_OBSTRUCTION_STATE_OBSTRUCTED;
+    }
+    else
+    {
+      // It's been less than 700ms, so we are still considered clear
+      obs_state = GDO_OBSTRUCTION_STATE_CLEAR;
+    }
   }
 
   if (obs_state != g_status.obstruction)
@@ -1917,7 +1926,7 @@ static void decode_packet(uint8_t *packet)
   uint8_t parity = (data >> 12) & 0x0f;
   data &= ~0xf000;
 
-  if ((fixed & 0xFFFFFFFF) == g_status.client_id)
+  if ((fixed & 0xFFFF) == g_status.client_id)
   { // my commands
     ESP_LOGE(TAG,
              "received mine: rolling=%07" PRIx32 " fixed=%010" PRIx64
@@ -2373,10 +2382,10 @@ static void update_door_state(const gdo_door_state_t door_state)
   {
     int64_t open_duration = esp_timer_get_time() - start_opening;
     open_counter++;
-    open_average += (open_duration - open_average) / (AVERAGE_OVER < open_counter) ? AVERAGE_OVER : open_counter;
+    open_average += (open_duration - open_average) / ((AVERAGE_OVER < open_counter) ? AVERAGE_OVER : open_counter);
     g_status.open_ms = (uint16_t)(open_average / 1000LL);
     ESP_LOGD(TAG, "Door open duration: %lldms, average: %ums", open_duration / 1000LL, g_status.open_ms);
-    send_event(GDO_CB_EVENT_OPEN_DURATION_MEASUREMENT);
+    queue_event((gdo_event_t){GDO_EVENT_DOOR_OPEN_DURATION_MEASUREMENT});
   }
   else if (door_state == GDO_DOOR_STATE_CLOSING && g_status.door == GDO_DOOR_STATE_OPEN)
   {
@@ -2387,10 +2396,10 @@ static void update_door_state(const gdo_door_state_t door_state)
   {
     int64_t close_duration = esp_timer_get_time() - start_closing;
     close_counter++;
-    close_average += (close_duration - close_average) / (AVERAGE_OVER < close_counter) ? AVERAGE_OVER : close_counter;
+    close_average += (close_duration - close_average) / ((AVERAGE_OVER < close_counter) ? AVERAGE_OVER : close_counter);
     g_status.close_ms = (uint16_t)(close_average / 1000LL);
     ESP_LOGD(TAG, "Door close duration: %lldms, average: %ums", close_duration / 1000LL, g_status.close_ms);
-    send_event(GDO_CB_EVENT_CLOSE_DURATION_MEASUREMENT);
+    queue_event((gdo_event_t){GDO_EVENT_DOOR_CLOSE_DURATION_MEASUREMENT});
   }
   else if (door_state == GDO_DOOR_STATE_STOPPED)
   {

@@ -177,8 +177,8 @@ extern "C"
 
     typedef struct
     {
-        int64_t sleep_micros;
         uint32_t count;
+        uint64_t last_pulse_micros;
         portMUX_TYPE mux;
     } gdo_obstruction_stats_t;
 
