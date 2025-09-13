@@ -45,6 +45,7 @@ static void update_lock_state(gdo_lock_state_t lock_state);
 static void update_learn_state(gdo_learn_state_t learn_state);
 static void handle_light_action(gdo_light_action_t light_action);
 static void update_obstruction_state(gdo_obstruction_state_t obs_state);
+static void smart_update_obstruction_state(gdo_obstruction_state_t obs_state);
 static void update_motion_state(gdo_motion_state_t motion_state);
 static void update_motor_state(gdo_motor_state_t motor_state);
 static void update_button_state(gdo_button_state_t button_state);
@@ -132,8 +133,14 @@ static gdo_obstruction_stats_t obst_stats = {
     .last_pulse_micros = 0,
 };
 
-const static uint32_t OBST_CHECK_PERIOD = 100; // Milliseconds between checks for obstruction
+const static uint32_t OBST_CHECK_PERIOD = 50; // Milliseconds between checks for obstruction
 const static uint32_t OBST_LOWER_LIMIT = 1;    // Number of pulses to consider clear state
+
+// Variables to track obstruction pulse statistics
+static volatile uint32_t obst_pulses = 0;
+
+// Track last obstruction state when door was closed (for SecPlus V2 protocol)
+static gdo_obstruction_state_t last_obstruction_state_when_closed = GDO_OBSTRUCTION_STATE_MAX;
 
 /******************************* PUBLIC API FUNCTIONS **********************************/
 
@@ -199,7 +206,7 @@ esp_err_t gdo_init(const gdo_config_t *config)
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_ANYEDGE,
+        .intr_type = GPIO_INTR_NEGEDGE,
     };
 
     // Initialize the global obstruction stats
@@ -605,6 +612,49 @@ esp_err_t gdo_get_status(gdo_status_t *status)
   portENTER_CRITICAL(&gdo_spinlock);
   *status = g_status;
   portEXIT_CRITICAL(&gdo_spinlock);
+  return ESP_OK;
+}
+
+/**
+ * @brief Get the current obstruction pulse statistics.
+ * @param stats a pointer to the obstruction pulse stats structure to be filled.
+ * @param clear_counters if true, clears all pulse counters after reading.
+ * @return ESP_OK on success, ESP_ERR_INVALID_ARG if stats is NULL.
+ * @note This function provides real-time statistics about obstruction sensor pulse counts.
+ */
+esp_err_t gdo_get_obstruction_pulse_stats(gdo_obstruction_pulse_stats_t *stats, bool clear_counters)
+{
+  if (!stats)
+  {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  uint64_t current_time = esp_timer_get_time();
+
+  portENTER_CRITICAL(&gdo_spinlock);
+  stats->pulses = obst_pulses;
+  stats->current_pulse_count = obst_stats.count;
+  stats->last_pulse_time_us = obst_stats.last_pulse_micros;
+
+  // Clear counters if requested
+  if (clear_counters) {
+    obst_pulses = 0;
+    obst_stats.count = 0;
+    obst_stats.last_pulse_micros = 0;
+  }
+
+  portEXIT_CRITICAL(&gdo_spinlock);
+
+  // Calculate time since last pulse in milliseconds
+  if (stats->last_pulse_time_us > 0)
+  {
+    stats->time_since_last_pulse_ms = (uint32_t)((current_time - stats->last_pulse_time_us) / 1000);
+  }
+  else
+  {
+    stats->time_since_last_pulse_ms = 0;
+  }
+
   return ESP_OK;
 }
 
@@ -1377,13 +1427,20 @@ done:
 
 /**
  * @brief Handles the obstruction interrupt and increments the count in the
- * stats struct.
+ * stats struct with pulse statistics tracking.
  */
 static void IRAM_ATTR obst_isr_handler(void *arg)
 {
   gdo_obstruction_stats_t *stats = (gdo_obstruction_stats_t *)arg;
+  uint64_t current_time = esp_timer_get_time();
+
   portENTER_CRITICAL_ISR(&stats->mux);
+
+  // Count all pulses
+  obst_pulses++;
   ++stats->count;
+  stats->last_pulse_micros = current_time;
+
   portEXIT_CRITICAL_ISR(&stats->mux);
 }
 
@@ -1422,6 +1479,22 @@ static void obst_timer_cb(void *arg)
   }
   stats->count = 0;
   portEXIT_CRITICAL(&gdo_spinlock);
+
+  // For SecPlus V2 protocol, only update obstruction when light is on
+  // (GDO only powers obstruction sensor when light is on)
+  if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2 && g_status.light != GDO_LIGHT_STATE_ON)
+  {
+    // For closed door, maintain last known state
+    if (g_status.door == GDO_DOOR_STATE_CLOSED && last_obstruction_state_when_closed != GDO_OBSTRUCTION_STATE_MAX)
+    {
+      // Keep the last known obstruction state when door was closed
+      if (g_status.obstruction != last_obstruction_state_when_closed)
+      {
+        update_obstruction_state(last_obstruction_state_when_closed);
+      }
+    }
+    return; // Don't process sensor data when light is off for SecPlus V2
+  }
 
   if (has_pulses)
   {
@@ -1958,7 +2031,7 @@ static void decode_packet(uint8_t *packet)
     update_learn_state((gdo_learn_state_t)((byte2 >> 5) & 1));
     if (g_config.obst_from_status)
     {
-      update_obstruction_state((gdo_obstruction_state_t)((byte1 >> 6) & 1));
+      smart_update_obstruction_state((gdo_obstruction_state_t)((byte1 >> 6) & 1));
     }
   }
   else if (cmd == GDO_CMD_PAIR_3_RESP)
@@ -1968,7 +2041,7 @@ static void decode_packet(uint8_t *packet)
       // Use Pair3Resp packets for obstruction detection via parity
       // Parity 3 = clear, Parity 4 = obstructed
       // or should it be byte1 9 = clear, byte1 14 = obstructed ??
-      update_obstruction_state((parity == 3) ? GDO_OBSTRUCTION_STATE_CLEAR : GDO_OBSTRUCTION_STATE_OBSTRUCTED);
+      smart_update_obstruction_state((parity == 3) ? GDO_OBSTRUCTION_STATE_CLEAR : GDO_OBSTRUCTION_STATE_OBSTRUCTED);
     }
   }
   else if (cmd == GDO_CMD_LIGHT)
@@ -2466,6 +2539,25 @@ static void update_door_state(const gdo_door_state_t door_state)
   static int32_t previous_door_target = -1;
   if ((door_state != g_status.door) || (previous_door_position != g_status.door_position) || (previous_door_target != g_status.door_target))
   {
+    // For SecPlus V2 protocol, save the current obstruction state when door transitions to closed
+    if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2 &&
+        door_state == GDO_DOOR_STATE_CLOSED &&
+        g_status.door != GDO_DOOR_STATE_CLOSED &&
+        g_status.obstruction != GDO_OBSTRUCTION_STATE_MAX)
+    {
+      last_obstruction_state_when_closed = g_status.obstruction;
+      ESP_LOGD(TAG, "Saved obstruction state when door closed: %s",
+               gdo_obstruction_state_to_string(last_obstruction_state_when_closed));
+    }
+    // Reset saved obstruction state when door opens from any state
+    else if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2 &&
+             door_state == GDO_DOOR_STATE_OPEN &&
+             g_status.door != GDO_DOOR_STATE_OPEN)
+    {
+      last_obstruction_state_when_closed = GDO_OBSTRUCTION_STATE_MAX;
+      ESP_LOGD(TAG, "Reset saved obstruction state - door opened");
+    }
+
     ESP_LOGD(TAG, "Door state: %s", gdo_door_state_to_string(door_state));
     g_status.door = door_state;
     previous_door_position = g_status.door_position;
@@ -2603,6 +2695,33 @@ inline static void update_lock_state(gdo_lock_state_t lock_state)
   {
     ESP_LOGV(TAG, "Lock state: %s", gdo_lock_state_to_string(lock_state));
   }
+}
+
+/**
+ * @brief Updates the local obstruction state with SecPlus V2 protocol and door state considerations.
+ * @param obstruction_state The new obstruction state to update to.
+ */
+inline static void
+smart_update_obstruction_state(gdo_obstruction_state_t obstruction_state)
+{
+  // For SecPlus V2 protocol, only update obstruction when light is on
+  // (GDO only powers obstruction sensor when light is on)
+  if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2 && g_status.light != GDO_LIGHT_STATE_ON)
+  {
+    // For closed door, maintain last known state
+    if (g_status.door == GDO_DOOR_STATE_CLOSED && last_obstruction_state_when_closed != GDO_OBSTRUCTION_STATE_MAX)
+    {
+      // Keep the last known obstruction state when door was closed
+      if (g_status.obstruction != last_obstruction_state_when_closed)
+      {
+        update_obstruction_state(last_obstruction_state_when_closed);
+      }
+    }
+    return; // Don't update from protocol data when light is off for SecPlus V2
+  }
+
+  // For all other cases, update normally
+  update_obstruction_state(obstruction_state);
 }
 
 /**
