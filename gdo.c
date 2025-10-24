@@ -2528,13 +2528,6 @@ static void update_door_state(const gdo_door_state_t door_state)
     }
   }
 
-  if (g_status.door == GDO_DOOR_STATE_UNKNOWN &&
-      g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1 &&
-      gdo_sync_task_handle)
-  {
-    xTaskNotifyGive(gdo_sync_task_handle);
-  }
-
   static int32_t previous_door_position = -1;
   static int32_t previous_door_target = -1;
   if ((door_state != g_status.door) || (previous_door_position != g_status.door_position) || (previous_door_target != g_status.door_target))
@@ -2567,6 +2560,11 @@ static void update_door_state(const gdo_door_state_t door_state)
   else
   {
     ESP_LOGV(TAG, "Door state: %s", gdo_door_state_to_string(door_state));
+  }
+
+  if (g_status.door == GDO_DOOR_STATE_UNKNOWN && g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1 && gdo_sync_task_handle)
+  {
+    xTaskNotifyGive(gdo_sync_task_handle);
   }
 }
 
