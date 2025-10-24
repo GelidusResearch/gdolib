@@ -83,7 +83,7 @@ static gdo_status_t g_status = {
     .button = GDO_BUTTON_STATE_MAX,
     .battery = GDO_BATT_STATE_UNKNOWN,
     .learn = GDO_LEARN_STATE_MAX,
-    .obstruction = GDO_OBSTRUCTION_STATE_MAX,
+    .obstruction = GDO_OBSTRUCTION_STATE_UNKNOWN, // or GDO_OBSTRUCTION_STATE_MAX
     .paired_devices = {GDO_PAIRED_DEVICE_COUNT_UNKNOWN,
                        GDO_PAIRED_DEVICE_COUNT_UNKNOWN,
                        GDO_PAIRED_DEVICE_COUNT_UNKNOWN,
@@ -1485,7 +1485,7 @@ static void obst_timer_cb(void *arg)
   if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2 && g_status.light != GDO_LIGHT_STATE_ON)
   {
     // For closed door, maintain last known state
-    if (g_status.door == GDO_DOOR_STATE_CLOSED && last_obstruction_state_when_closed != GDO_OBSTRUCTION_STATE_MAX)
+    if (g_status.door == GDO_DOOR_STATE_CLOSED && last_obstruction_state_when_closed != GDO_OBSTRUCTION_STATE_UNKNOWN)
     {
       // Keep the last known obstruction state when door was closed
       if (g_status.obstruction != last_obstruction_state_when_closed)
@@ -2704,23 +2704,25 @@ inline static void update_lock_state(gdo_lock_state_t lock_state)
 inline static void
 smart_update_obstruction_state(gdo_obstruction_state_t obstruction_state)
 {
-  // For SecPlus V2 protocol, only update obstruction when light is on
-  // (GDO only powers obstruction sensor when light is on)
-  if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2 && g_status.light != GDO_LIGHT_STATE_ON)
+  // For SecPlus V2 protocol, only update obstruction state when light is on
+  // Exception: Always allow update from unknown state
+  if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2)
   {
-    // For closed door, maintain last known state
-    if (g_status.door == GDO_DOOR_STATE_CLOSED && last_obstruction_state_when_closed != GDO_OBSTRUCTION_STATE_MAX)
+    // Allow initial state to be set from unknown
+    if (g_status.obstruction == GDO_OBSTRUCTION_STATE_UNKNOWN)
     {
-      // Keep the last known obstruction state when door was closed
-      if (g_status.obstruction != last_obstruction_state_when_closed)
-      {
-        update_obstruction_state(last_obstruction_state_when_closed);
-      }
+      update_obstruction_state(obstruction_state);
+      return;
     }
-    return; // Don't update from protocol data when light is off for SecPlus V2
+
+    // If light is off, don't update obstruction state
+    if (g_status.light != GDO_LIGHT_STATE_ON)
+    {
+      ESP_LOGD(TAG, "Ignoring obstruction update (light off, SecPlus V2)");
+      return;
+    }
   }
 
-  // For all other cases, update normally
   update_obstruction_state(obstruction_state);
 }
 
