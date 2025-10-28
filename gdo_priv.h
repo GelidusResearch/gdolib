@@ -37,7 +37,7 @@ extern "C"
 #define GDO_TASK_PRIORITY_HIGH 18        // Contact ISR tasks - highest priority for real-time response
 #define GDO_TASK_PRIORITY_MEDIUM_HIGH 16 // Main task - medium-high priority for processing
 #define GDO_TASK_PRIORITY_MEDIUM 14      // Sync task - medium priority for background sync
-#define GDO_ISR_PRIORITY 2               // GPIO ISR service priority
+#define GDO_ISR_PRIORITY 12              // GPIO ISR service priority
 
 // Task stack size definitions
 #define GDO_TASK_STACK_SIZE 4096         // Standard stack size for all GDO tasks
@@ -111,8 +111,9 @@ extern "C"
         GDO_EVENT_LEARN_UPDATE,
         GDO_EVENT_OPENINGS_UPDATE,
         GDO_EVENT_MOTION_UPDATE,
-        GDO_EVENT_UPDATE_TTC,
         GDO_EVENT_SET_TTC,
+        GDO_EVENT_CANCEL_TTC,
+        GDO_EVENT_UPDATE_TTC,
         GDO_EVENT_PAIRED_DEVICES_UPDATE,
         GDO_EVENT_DOOR_OPEN_DURATION_MEASUREMENT,
         GDO_EVENT_DOOR_CLOSE_DURATION_MEASUREMENT,
