@@ -339,7 +339,6 @@ esp_err_t gdo_init(const gdo_config_t *config)
         .stop_bits = UART_STOP_BITS_1,
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
         .source_clk = UART_SCLK_DEFAULT,
-
     };
 
     err = uart_param_config(g_config.uart_num, &uart_config);
@@ -393,6 +392,7 @@ esp_err_t gdo_deinit(void)
   ESP_LOGI(TAG, "Shutdown GDOLIB tasks");
   if (v1_status_timer)
   {
+    esp_timer_stop(v1_status_timer);
     esp_timer_delete(v1_status_timer);
     v1_status_timer = NULL;
   }
@@ -432,30 +432,35 @@ esp_err_t gdo_deinit(void)
 
   if (motion_detect_timer)
   {
+    esp_timer_stop(motion_detect_timer);
     esp_timer_delete(motion_detect_timer);
     motion_detect_timer = NULL;
   }
 
   if (door_position_sync_timer)
   {
+    esp_timer_stop(door_position_sync_timer);
     esp_timer_delete(door_position_sync_timer);
     door_position_sync_timer = NULL;
   }
 
   if (obst_timer)
   {
+    esp_timer_stop(obst_timer);
     esp_timer_delete(obst_timer);
     obst_timer = NULL;
   }
 
   if (tof_timer)
   {
+    esp_timer_stop(tof_timer);
     esp_timer_delete(tof_timer);
     tof_timer = NULL;
   }
 
   if (obst_test_pulse_timer)
   {
+    esp_timer_stop(obst_test_pulse_timer);
     esp_timer_delete(obst_test_pulse_timer);
     obst_test_pulse_timer = NULL;
   }
