@@ -61,9 +61,10 @@ extern "C"
 
     typedef enum
     {
-        GDO_OBSTRUCTION_STATE_OBSTRUCTED = 0,
-        GDO_OBSTRUCTION_STATE_CLEAR,
-        GDO_OBSTRUCTION_STATE_MAX,
+        GDO_OBSTRUCTION_STATE_UNKNOWN = 0,
+        GDO_OBSTRUCTION_STATE_CLEAR = 1,
+        GDO_OBSTRUCTION_STATE_OBSTRUCTED = 2,
+        GDO_OBSTRUCTION_STATE_MAX
     } gdo_obstruction_state_t;
 
     typedef enum
@@ -108,7 +109,7 @@ extern "C"
     typedef enum
     {
         GDO_PROTOCOL_UNKNOWN = 0,
-        GDO_PROTOCOL_SEC_PLUS_V1 = 1,
+        GDO_PROTOCOL_SEC_PLUS_V1,
         GDO_PROTOCOL_SEC_PLUS_V2,
         GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL,
         GDO_PROTOCOL_DRY_CONTACT,
