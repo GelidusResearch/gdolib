@@ -1440,7 +1440,10 @@ done:
 static void IRAM_ATTR obst_isr_handler(void *arg)
 {
   gdo_obstruction_stats_t *stats = (gdo_obstruction_stats_t *)arg;
+
+  portENTER_CRITICAL_ISR(&stats->mux);
   ++stats->count;
+  portEXIT_CRITICAL_ISR(&stats->mux);
 }
 
 /****************************** TIMER CALLBACKS ************************************/
@@ -1456,29 +1459,40 @@ static void obst_timer_cb(void *arg)
   gdo_obstruction_stats_t *stats = (gdo_obstruction_stats_t *)arg;
   int64_t micros_now = esp_timer_get_time();
   gdo_obstruction_state_t obs_state = GDO_OBSTRUCTION_STATE_MAX;
+  int count_snapshot;
+  int64_t last_pulse_snapshot;
+
+  // Take snapshot of shared data under critical section
+  portENTER_CRITICAL(&stats->mux);
+  count_snapshot = stats->count;
+  last_pulse_snapshot = stats->last_pulse_micros;
+  stats->count = 0;  // Reset count for next period
+  portEXIT_CRITICAL(&stats->mux);
 
   ESP_LOGD(TAG, "obst_timer: count=%d last_pulse=%lld now=%lld pin=%d",
-           stats->count, stats->last_pulse_micros, micros_now, gpio_get_level(g_config.obst_in_pin));
+           count_snapshot, last_pulse_snapshot, micros_now, gpio_get_level(g_config.obst_in_pin));
 
-  if (stats->count > 3)
+  if (count_snapshot > 3)
   {
+    portENTER_CRITICAL(&stats->mux);
     stats->last_pulse_micros = 0;
+    portEXIT_CRITICAL(&stats->mux);
     obs_state = GDO_OBSTRUCTION_STATE_CLEAR;
   }
-  else if (stats->count == 0)
+  else if (count_snapshot == 0)
   {
     if (!gpio_get_level(g_config.obst_in_pin))
     {
+      portENTER_CRITICAL(&stats->mux);
       stats->last_pulse_micros = micros_now;
+      portEXIT_CRITICAL(&stats->mux);
       obs_state = GDO_OBSTRUCTION_STATE_CLEAR;
     }
-    else if (micros_now - stats->last_pulse_micros > 700000)
+    else if (micros_now - last_pulse_snapshot > 700000)
     {
       obs_state = GDO_OBSTRUCTION_STATE_OBSTRUCTED;
     }
   }
-
-  stats->count = 0;
 
   ESP_LOGD(TAG, "obst_timer: obs_state=%d current_status=%d", obs_state, g_status.obstruction);
 
