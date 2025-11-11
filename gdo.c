@@ -595,6 +595,8 @@ esp_err_t gdo_start(gdo_event_callback_t event_callback, void *user_arg)
     return err;
   }
 
+  get_status();
+
   g_event_callback = event_callback;
   ESP_LOGI(TAG, "GDO Started");
   return err;
