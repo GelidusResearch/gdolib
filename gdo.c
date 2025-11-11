@@ -1440,7 +1440,7 @@ done:
 static void IRAM_ATTR obst_isr_handler(void *arg)
 {
   gdo_obstruction_stats_t *stats = (gdo_obstruction_stats_t *)arg;
-  
+
   portENTER_CRITICAL_ISR(&stats->mux);
   ++stats->count;
   portEXIT_CRITICAL_ISR(&stats->mux);
