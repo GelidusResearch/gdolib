@@ -96,7 +96,7 @@ static gdo_status_t g_status = {
     .close_ms = 0,
     .door_position = -1,
     .door_target = -1,
-    .client_id = 0x5AFE,
+    .client_id = 0,  // Must be set by application before sync
     .toggle_only = false,
     .obst_override = false,
     .last_move_direction = GDO_DOOR_STATE_UNKNOWN,
@@ -127,8 +127,16 @@ static uint32_t g_tx_delay_ms = GDO_MIN_COMMAND_INTERVAL_MS;
 static uint32_t g_ttc_delay_s = 0;
 static portMUX_TYPE gdo_spinlock = portMUX_INITIALIZER_UNLOCKED;
 
-const static uint32_t OBST_CHECK_PERIOD = 100; // Milliseconds between checks for obstruction
+static gdo_obstruction_stats_t obst_stats = {
+    .count = 0,
+    .last_pulse_micros = 0,
+};
+
+const static uint32_t OBST_CHECK_PERIOD = 250; // Milliseconds between checks for obstruction
 const static uint32_t OBST_LOWER_LIMIT = 1;    // Number of pulses to consider clear state
+
+// Variables to track obstruction pulse statistics
+static volatile uint32_t obst_pulses = 0;
 
 /******************************* PUBLIC API FUNCTIONS **********************************/
 
@@ -187,7 +195,7 @@ esp_err_t gdo_init(const gdo_config_t *config)
     return err;
   }
 
-  if ((g_config.obst_in_pin > 0) && !g_config.obst_from_status)
+  if (!g_config.obst_from_status && g_config.obst_in_pin > 0)
   {
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << g_config.obst_in_pin),
@@ -196,9 +204,10 @@ esp_err_t gdo_init(const gdo_config_t *config)
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_NEGEDGE,
     };
-    static gdo_obstruction_stats_t obst_stats;
+
+    // Initialize the global obstruction stats
     portMUX_INITIALIZE(&obst_stats.mux);
-    obst_stats.sleep_micros = 0;
+    obst_stats.last_pulse_micros = esp_timer_get_time();
 
     err = gpio_config(&io_conf);
     if (err != ESP_OK)
@@ -223,10 +232,13 @@ esp_err_t gdo_init(const gdo_config_t *config)
     timer_args.dispatch_method = ESP_TIMER_TASK;
     timer_args.name = "obst_timer";
     err = esp_timer_create(&timer_args, &obst_timer);
+    if (err != ESP_OK)
+    {
+      return err;
+    }
 
     // Check the obstruction pulse counts every 100ms
     err = esp_timer_start_periodic(obst_timer, OBST_CHECK_PERIOD * 1000);
-
     if (err != ESP_OK)
     {
       return err;
@@ -322,9 +334,7 @@ esp_err_t gdo_init(const gdo_config_t *config)
         .parity = UART_PARITY_EVEN,
         .stop_bits = UART_STOP_BITS_1,
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
-        uart_config.source_clk = UART_SCLK_DEFAULT,
-#endif
+        .source_clk = UART_SCLK_DEFAULT,
     };
 
     err = uart_param_config(g_config.uart_num, &uart_config);
@@ -378,6 +388,7 @@ esp_err_t gdo_deinit(void)
   ESP_LOGI(TAG, "Shutdown GDOLIB tasks");
   if (v1_status_timer)
   {
+    esp_timer_stop(v1_status_timer);
     esp_timer_delete(v1_status_timer);
     v1_status_timer = NULL;
   }
@@ -417,30 +428,35 @@ esp_err_t gdo_deinit(void)
 
   if (motion_detect_timer)
   {
+    esp_timer_stop(motion_detect_timer);
     esp_timer_delete(motion_detect_timer);
     motion_detect_timer = NULL;
   }
 
   if (door_position_sync_timer)
   {
+    esp_timer_stop(door_position_sync_timer);
     esp_timer_delete(door_position_sync_timer);
     door_position_sync_timer = NULL;
   }
 
   if (obst_timer)
   {
+    esp_timer_stop(obst_timer);
     esp_timer_delete(obst_timer);
     obst_timer = NULL;
   }
 
   if (tof_timer)
   {
+    esp_timer_stop(tof_timer);
     esp_timer_delete(tof_timer);
     tof_timer = NULL;
   }
 
   if (obst_test_pulse_timer)
   {
+    esp_timer_stop(obst_test_pulse_timer);
     esp_timer_delete(obst_test_pulse_timer);
     obst_test_pulse_timer = NULL;
   }
@@ -456,7 +472,7 @@ esp_err_t gdo_deinit(void)
   g_status.button = GDO_BUTTON_STATE_MAX;
   g_status.battery = GDO_BATT_STATE_UNKNOWN;
   g_status.learn = GDO_LEARN_STATE_MAX;
-  g_status.obstruction = GDO_OBSTRUCTION_STATE_CLEAR;
+  g_status.obstruction = GDO_OBSTRUCTION_STATE_MAX;
   g_status.paired_devices.total_remotes = GDO_PAIRED_DEVICE_COUNT_UNKNOWN;
   g_status.paired_devices.total_keypads = GDO_PAIRED_DEVICE_COUNT_UNKNOWN;
   g_status.paired_devices.total_wall_controls = GDO_PAIRED_DEVICE_COUNT_UNKNOWN;
@@ -532,7 +548,7 @@ esp_err_t gdo_start(gdo_event_callback_t event_callback, void *user_arg)
     info.contact = GDO_CONTACT_DOOR_OPEN;
     info.pin = g_config.dc_open_pin;
     // High priority as it needs to handle in real time, pin to CPU 1 so does not share with HomeKit/WiFi/mdns/etc.
-#ifdef CONFIG_FREERTOS_UNICORE
+#if defined(CONFIG_FREERTOS_UNICORE) || defined(NO_CORE_PINNING)
     if (xTaskCreate(gdo_contact_task, "gdo_open_ISR", GDO_TASK_STACK_SIZE, &info, GDO_TASK_PRIORITY_HIGH, &gdo_contact_task_handle[GDO_CONTACT_DOOR_OPEN - 1]) != pdPASS)
 #else
     if (xTaskCreatePinnedToCore(gdo_contact_task, "gdo_open_ISR", GDO_TASK_STACK_SIZE, &info, GDO_TASK_PRIORITY_HIGH, &gdo_contact_task_handle[GDO_CONTACT_DOOR_OPEN - 1], 1) != pdPASS)
@@ -549,7 +565,7 @@ esp_err_t gdo_start(gdo_event_callback_t event_callback, void *user_arg)
     info.contact = GDO_CONTACT_DOOR_CLOSE;
     info.pin = g_config.dc_close_pin;
     // High priority as it needs to handle in real time, pin to CPU 1 so does not share with HomeKit/WiFi/mdns/etc.
-#ifdef CONFIG_FREERTOS_UNICORE
+#if defined(CONFIG_FREERTOS_UNICORE) || defined(NO_CORE_PINNING)
     if (xTaskCreate(gdo_contact_task, "gdo_close_ISR", GDO_TASK_STACK_SIZE, &info, GDO_TASK_PRIORITY_HIGH, &gdo_contact_task_handle[GDO_CONTACT_DOOR_CLOSE - 1]) != pdPASS)
 #else
     if (xTaskCreatePinnedToCore(gdo_contact_task, "gdo_close_ISR", GDO_TASK_STACK_SIZE, &info, GDO_TASK_PRIORITY_HIGH, &gdo_contact_task_handle[GDO_CONTACT_DOOR_CLOSE - 1], 1) != pdPASS)
@@ -560,7 +576,7 @@ esp_err_t gdo_start(gdo_event_callback_t event_callback, void *user_arg)
   }
 
   // Medium-high priority as it needs to handle in real time, pin to CPU 1 so does not share with HomeKit/WiFi/mdns/etc.
-#ifdef CONFIG_FREERTOS_UNICORE
+#if defined(CONFIG_FREERTOS_UNICORE) || defined(NO_CORE_PINNING)
   if (xTaskCreate(gdo_main_task, "gdo_main_task", GDO_TASK_STACK_SIZE, NULL, GDO_TASK_PRIORITY_MEDIUM_HIGH, &gdo_main_task_handle) != pdPASS)
 #else
   if (xTaskCreatePinnedToCore(gdo_main_task, "gdo_main_task", GDO_TASK_STACK_SIZE, NULL, GDO_TASK_PRIORITY_MEDIUM_HIGH, &gdo_main_task_handle, 1) != pdPASS)
@@ -574,6 +590,8 @@ esp_err_t gdo_start(gdo_event_callback_t event_callback, void *user_arg)
   {
     return err;
   }
+
+  get_status();
 
   g_event_callback = event_callback;
   ESP_LOGI(TAG, "GDO Started");
@@ -596,6 +614,49 @@ esp_err_t gdo_get_status(gdo_status_t *status)
   portENTER_CRITICAL(&gdo_spinlock);
   *status = g_status;
   portEXIT_CRITICAL(&gdo_spinlock);
+  return ESP_OK;
+}
+
+/**
+ * @brief Get the current obstruction pulse statistics.
+ * @param stats a pointer to the obstruction pulse stats structure to be filled.
+ * @param clear_counters if true, clears all pulse counters after reading.
+ * @return ESP_OK on success, ESP_ERR_INVALID_ARG if stats is NULL.
+ * @note This function provides real-time statistics about obstruction sensor pulse counts.
+ */
+esp_err_t gdo_get_obstruction_pulse_stats(gdo_obstruction_pulse_stats_t *stats, bool clear_counters)
+{
+  if (!stats)
+  {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  uint64_t current_time = esp_timer_get_time();
+
+  portENTER_CRITICAL(&gdo_spinlock);
+  stats->pulses = obst_pulses;
+  stats->current_pulse_count = obst_stats.count;
+  stats->last_pulse_time_us = obst_stats.last_pulse_micros;
+
+  // Clear counters if requested
+  if (clear_counters) {
+    obst_pulses = 0;
+    obst_stats.count = 0;
+    obst_stats.last_pulse_micros = 0;
+  }
+
+  portEXIT_CRITICAL(&gdo_spinlock);
+
+  // Calculate time since last pulse in milliseconds
+  if (stats->last_pulse_time_us > 0)
+  {
+    stats->time_since_last_pulse_ms = (uint32_t)((current_time - stats->last_pulse_time_us) / 1000);
+  }
+  else
+  {
+    stats->time_since_last_pulse_ms = 0;
+  }
+
   return ESP_OK;
 }
 
@@ -623,7 +684,7 @@ esp_err_t gdo_sync(void)
   if (!gdo_sync_task_handle)
   {
     // Medium priority for background sync, pin to CPU 1 so does not share with HomeKit/WiFi/mdns/etc.
-#ifdef CONFIG_FREERTOS_UNICORE
+#if defined(CONFIG_FREERTOS_UNICORE) || defined(NO_CORE_PINNING)
     if (xTaskCreate(gdo_sync_task, "gdo_sync_task", GDO_TASK_STACK_SIZE, NULL, GDO_TASK_PRIORITY_MEDIUM, &gdo_sync_task_handle) != pdPASS)
 #else
     if (xTaskCreatePinnedToCore(gdo_sync_task, "gdo_sync_task", GDO_TASK_STACK_SIZE, NULL, GDO_TASK_PRIORITY_MEDIUM, &gdo_sync_task_handle, 1) != pdPASS)
@@ -1175,16 +1236,128 @@ static void gdo_sync_task(void *arg)
 {
   bool synced = true;
 
-  if (g_status.protocol != GDO_PROTOCOL_SEC_PLUS_V2)
+  // Try V2 first if protocol not already determined to be V1
+  if (g_status.protocol != GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL &&
+      g_status.protocol != GDO_PROTOCOL_SEC_PLUS_V1)
   {
-    // Protocol not previously forced to V2, so try a V1 sync.
-    uart_set_baudrate(g_config.uart_num, 1200);
-    uart_set_parity(g_config.uart_num, UART_PARITY_EVEN);
+    // V1 setup has somehow failed.  Try and do a V2 sync
+    ESP_LOGI(TAG, "SYNC TASK: Initialize V2 syncing");
+    uint32_t timeout = esp_timer_get_time() / 1000 + 5000;
+    uint8_t sync_stage = 0;
+    g_status.protocol = GDO_PROTOCOL_SEC_PLUS_V2;
+    uart_set_baudrate(g_config.uart_num, 9600);
+    uart_set_parity(g_config.uart_num, UART_PARITY_DISABLE);
     uart_flush(g_config.uart_num);
     xQueueReset(gdo_event_queue);
+    xQueueReset(gdo_tx_queue);
 
-    // Delay forever if there is a smart panel connected to allow it to come online and sync before we do anything.
-    ulTaskNotifyTake(pdTRUE, g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL ? portMAX_DELAY : pdMS_TO_TICKS(2500));
+    // We send a get openings because if we have a new client ID then the
+    // first command may be ignored, and sometime doors will throw away
+    // duplicate commands in a row.  So we want the get_status in following
+    // loop to actually work.
+    get_openings();
+
+    for (;;)
+    {
+      if ((esp_timer_get_time() / 1000) > timeout)
+      {
+        synced = false;
+        break;
+      }
+
+      vTaskDelay(pdMS_TO_TICKS((g_tx_delay_ms * 2 > 500) ? g_tx_delay_ms * 2 : 500));
+
+      if (g_status.door == GDO_DOOR_STATE_UNKNOWN)
+      {
+        ESP_LOGI(TAG, "SYNC TASK: Getting status");
+        get_status();
+        continue;
+      }
+      else if (sync_stage < 1)
+      {
+        sync_stage = 1;
+        timeout += 1000;
+      }
+
+      if (sync_stage < 2)
+      {
+        ESP_LOGI(TAG, "SYNC TASK: Getting openings");
+        get_openings();
+        sync_stage = 2;
+        timeout += 1000;
+      }
+
+      if (g_status.paired_devices.total_all == GDO_PAIRED_DEVICE_COUNT_UNKNOWN)
+      {
+        ESP_LOGI(TAG, "SYNC TASK: Getting all paired devices");
+        get_paired_devices(GDO_PAIRED_DEVICE_TYPE_ALL);
+        continue;
+      }
+      else if (sync_stage < 3)
+      {
+        sync_stage = 3;
+        timeout += 1000;
+      }
+
+      if (g_status.paired_devices.total_remotes == GDO_PAIRED_DEVICE_COUNT_UNKNOWN)
+      {
+        ESP_LOGI(TAG, "SYNC TASK: Getting remotes");
+        get_paired_devices(GDO_PAIRED_DEVICE_TYPE_REMOTE);
+        continue;
+      }
+      else if (sync_stage < 4)
+      {
+        sync_stage = 4;
+        timeout += 1000;
+      }
+
+      if (g_status.paired_devices.total_keypads == GDO_PAIRED_DEVICE_COUNT_UNKNOWN)
+      {
+        ESP_LOGI(TAG, "SYNC TASK: Getting keypads");
+        get_paired_devices(GDO_PAIRED_DEVICE_TYPE_KEYPAD);
+        continue;
+      }
+      else if (sync_stage < 5)
+      {
+        sync_stage = 5;
+        timeout += 1000;
+      }
+
+      if (g_status.paired_devices.total_wall_controls == GDO_PAIRED_DEVICE_COUNT_UNKNOWN)
+      {
+        ESP_LOGI(TAG, "SYNC TASK: Getting wall controls");
+        get_paired_devices(GDO_PAIRED_DEVICE_TYPE_WALL_CONTROL);
+        continue;
+      }
+      else if (sync_stage < 6)
+      {
+        sync_stage = 6;
+        timeout += 1000;
+      }
+
+      if (g_status.paired_devices.total_accessories == GDO_PAIRED_DEVICE_COUNT_UNKNOWN)
+      {
+        ESP_LOGI(TAG, "SYNC TASK: Getting accessories");
+        get_paired_devices(GDO_PAIRED_DEVICE_TYPE_ACCESSORY);
+        continue;
+      }
+
+      queue_event((gdo_event_t){GDO_EVENT_PAIRED_DEVICES_UPDATE});
+      break;
+    }
+
+    // If V2 sync failed and protocol not forced, try V1
+    if (!synced && !g_protocol_forced)
+    {
+      ESP_LOGW(TAG, "SYNC TASK: V2 sync failed, trying V1");
+      // Try V1 sync
+      uart_set_baudrate(g_config.uart_num, 1200);
+      uart_set_parity(g_config.uart_num, UART_PARITY_EVEN);
+      uart_flush(g_config.uart_num);
+      xQueueReset(gdo_event_queue);
+
+      // Delay forever if there is a smart panel connected to allow it to come online and sync before we do anything.
+      ulTaskNotifyTake(pdTRUE, g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL ? portMAX_DELAY : pdMS_TO_TICKS(2500));
 
     if (g_status.door == GDO_DOOR_STATE_UNKNOWN)
     {
@@ -1238,113 +1411,8 @@ static void gdo_sync_task(void *arg)
       synced = true;
       goto done;
     }
-  }
-
-  // V1 setup has somehow failed.  Try and do a V2 sync
-  ESP_LOGI(TAG, "SYNC TASK: Initialize V2 syncing");
-  uint32_t timeout = esp_timer_get_time() / 1000 + 5000;
-  uint8_t sync_stage = 0;
-  g_status.protocol = GDO_PROTOCOL_SEC_PLUS_V2;
-  uart_set_baudrate(g_config.uart_num, 9600);
-  uart_set_parity(g_config.uart_num, UART_PARITY_DISABLE);
-  uart_flush(g_config.uart_num);
-  xQueueReset(gdo_event_queue);
-  xQueueReset(gdo_tx_queue);
-
-  // We send a get openings because if we have a new client ID then the
-  // first command may be ignored, and sometime doors will throw away
-  // duplicate commands in a row.  So we want the get_status in following
-  // loop to actually work.
-  get_openings();
-
-  for (;;)
-  {
-    if ((esp_timer_get_time() / 1000) > timeout)
-    {
-      synced = false;
-      break;
-    }
-
-    vTaskDelay(pdMS_TO_TICKS((g_tx_delay_ms * 2 > 500) ? g_tx_delay_ms * 2 : 500));
-
-    if (g_status.door == GDO_DOOR_STATE_UNKNOWN)
-    {
-      ESP_LOGI(TAG, "SYNC TASK: Getting status");
-      get_status();
-      continue;
-    }
-    else if (sync_stage < 1)
-    {
-      sync_stage = 1;
-      timeout += 1000;
-    }
-
-    if (sync_stage < 2)
-    {
-      ESP_LOGI(TAG, "SYNC TASK: Getting openings");
-      get_openings();
-      sync_stage = 2;
-      timeout += 1000;
-    }
-
-    if (g_status.paired_devices.total_all == GDO_PAIRED_DEVICE_COUNT_UNKNOWN)
-    {
-      ESP_LOGI(TAG, "SYNC TASK: Getting all paired devices");
-      get_paired_devices(GDO_PAIRED_DEVICE_TYPE_ALL);
-      continue;
-    }
-    else if (sync_stage < 3)
-    {
-      sync_stage = 3;
-      timeout += 1000;
-    }
-
-    if (g_status.paired_devices.total_remotes == GDO_PAIRED_DEVICE_COUNT_UNKNOWN)
-    {
-      ESP_LOGI(TAG, "SYNC TASK: Getting remotes");
-      get_paired_devices(GDO_PAIRED_DEVICE_TYPE_REMOTE);
-      continue;
-    }
-    else if (sync_stage < 4)
-    {
-      sync_stage = 4;
-      timeout += 1000;
-    }
-
-    if (g_status.paired_devices.total_keypads == GDO_PAIRED_DEVICE_COUNT_UNKNOWN)
-    {
-      ESP_LOGI(TAG, "SYNC TASK: Getting keypads");
-      get_paired_devices(GDO_PAIRED_DEVICE_TYPE_KEYPAD);
-      continue;
-    }
-    else if (sync_stage < 5)
-    {
-      sync_stage = 5;
-      timeout += 1000;
-    }
-
-    if (g_status.paired_devices.total_wall_controls == GDO_PAIRED_DEVICE_COUNT_UNKNOWN)
-    {
-      ESP_LOGI(TAG, "SYNC TASK: Getting wall controls");
-      get_paired_devices(GDO_PAIRED_DEVICE_TYPE_WALL_CONTROL);
-      continue;
-    }
-    else if (sync_stage < 6)
-    {
-      sync_stage = 6;
-      timeout += 1000;
-    }
-
-    if (g_status.paired_devices.total_accessories == GDO_PAIRED_DEVICE_COUNT_UNKNOWN)
-    {
-      ESP_LOGI(TAG, "SYNC TASK: Getting accessories");
-      get_paired_devices(GDO_PAIRED_DEVICE_TYPE_ACCESSORY);
-      continue;
-    }
-
-    queue_event((gdo_event_t){GDO_EVENT_PAIRED_DEVICES_UPDATE});
-    break;
-  }
+    } // end V1 fallback block
+  } // end V2 first attempt
 
 done:
   g_status.synced = synced;
@@ -1367,12 +1435,12 @@ done:
 }
 
 /**
- * @brief Handles the obstruction interrupt and increments the count in the
- * stats struct.
+ * @brief Handles the obstruction interrupt and increments the count in the stats struct.
  */
 static void IRAM_ATTR obst_isr_handler(void *arg)
 {
   gdo_obstruction_stats_t *stats = (gdo_obstruction_stats_t *)arg;
+
   portENTER_CRITICAL_ISR(&stats->mux);
   ++stats->count;
   portEXIT_CRITICAL_ISR(&stats->mux);
@@ -1381,61 +1449,56 @@ static void IRAM_ATTR obst_isr_handler(void *arg)
 /****************************** TIMER CALLBACKS ************************************/
 
 /**
- * @brief Runs every 100ms and checks the count of obstruction interrupts.
- * @details 1 or more interrupts in 100ms is considered clear, 0 with the pin low
- * is asleep, and 0 with the pin high is obstructed. When the obstruction state
- * changes an event of GDO_EVENT_OBST is queued.
+ * @brief Runs every ~50ms and checks the count of obstruction interrupts.
+ * @details 3 or more interrupts in 250ms is considered clear, 0 with the pin low is asleep,
+ * and 0 with the pin high is obstructed.
+ * When the obstruction state changes an event of GDO_EVENT_OBST is queued.
  */
 static void obst_timer_cb(void *arg)
 {
   gdo_obstruction_stats_t *stats = (gdo_obstruction_stats_t *)arg;
   int64_t micros_now = esp_timer_get_time();
-  gdo_obstruction_state_t obs_state = g_status.obstruction;
+  gdo_obstruction_state_t obs_state = GDO_OBSTRUCTION_STATE_MAX;
+  int count_snapshot;
+  int64_t last_pulse_snapshot;
 
+  // Take snapshot of shared data under critical section
   portENTER_CRITICAL(&stats->mux);
-  if (g_status.obst_override)
-  {
-    // If override is enabled, we assume the sensor is clear
-    if (obs_state != GDO_OBSTRUCTION_STATE_CLEAR)
-      obs_state = GDO_OBSTRUCTION_STATE_CLEAR;
-    stats->sleep_micros = micros_now; // reset sleep time
-    portEXIT_CRITICAL(&stats->mux);
-    return;
-  }
+  count_snapshot = stats->count;
+  last_pulse_snapshot = stats->last_pulse_micros;
+  stats->count = 0;  // Reset count for next period
+  portEXIT_CRITICAL(&stats->mux);
 
-  if (stats->count >= OBST_LOWER_LIMIT)
+  ESP_LOGD(TAG, "obst_timer: count=%d last_pulse=%lld now=%lld pin=%d",
+           count_snapshot, last_pulse_snapshot, micros_now, gpio_get_level(g_config.obst_in_pin));
+
+  if (count_snapshot > 3)
   {
-    // Pulses being received, sensor is working and clear
+    portENTER_CRITICAL(&stats->mux);
+    stats->last_pulse_micros = 0;
+    portEXIT_CRITICAL(&stats->mux);
     obs_state = GDO_OBSTRUCTION_STATE_CLEAR;
-    stats->count = 0;
-    portEXIT_CRITICAL(&stats->mux);
   }
-  else if (stats->count == 0)
+  else if (count_snapshot == 0)
   {
-    // If there have been no pulses then the pin is steady high or low.
-    if (gpio_get_level(g_config.obst_in_pin))
+    if (!gpio_get_level(g_config.obst_in_pin))
     {
-      // sensor is asleep
-      stats->sleep_micros = micros_now;
+      portENTER_CRITICAL(&stats->mux);
+      stats->last_pulse_micros = micros_now;
+      portEXIT_CRITICAL(&stats->mux);
+      obs_state = GDO_OBSTRUCTION_STATE_CLEAR;
     }
-    else
+    else if (micros_now - last_pulse_snapshot > 700000)
     {
-      // if last asleep more than 700ms ago, then there is an obstruction present
-      if (micros_now - stats->sleep_micros > 700 * 1000)
-      {
-        obs_state = GDO_OBSTRUCTION_STATE_OBSTRUCTED;
-      }
+      obs_state = GDO_OBSTRUCTION_STATE_OBSTRUCTED;
     }
-    portEXIT_CRITICAL(&stats->mux);
-  }
-  else
-  {
-    // count is between one and OBST_LOWER_LIMIT, leave state unchanged
-    portEXIT_CRITICAL(&stats->mux);
   }
 
-  if (obs_state != g_status.obstruction)
+  ESP_LOGD(TAG, "obst_timer: obs_state=%d current_status=%d", obs_state, g_status.obstruction);
+
+  if (obs_state != GDO_OBSTRUCTION_STATE_MAX && obs_state != g_status.obstruction)
   {
+    ESP_LOGI(TAG, "obst_timer: updating obstruction to %d", obs_state);
     update_obstruction_state(obs_state);
   }
 }
@@ -1916,7 +1979,7 @@ static void decode_packet(uint8_t *packet)
 
   data &= ~0xf000;
 
-  if ((fixed & 0xFFFFFFFF) == g_status.client_id)
+  if ((fixed & 0xFFFF) == g_status.client_id)
   { // my commands
     ESP_LOGE(TAG,
              "received mine: rolling=%07" PRIx32 " fixed=%010" PRIx64
@@ -2033,7 +2096,8 @@ static void gdo_main_task(void *arg)
       case UART_DATA:
       {
         uint16_t rx_packet_size = event.uart_event.size;
-        if (!g_status.protocol)
+        // Only auto-detect protocol if not already determined
+        if (g_status.protocol == GDO_PROTOCOL_UNKNOWN)
         {
           if (rx_packet_size == 2)
           {
@@ -2136,10 +2200,10 @@ static void gdo_main_task(void *arg)
             // Filter out invalid bytes before processing to prevent mark/space bytes from being processed
             uint8_t filtered_buffer[RX_BUFFER_SIZE * 2];
             uint8_t filtered_index = 0;
-            
+
             for (uint8_t i = 0; i < rx_buf_index; i++)
             {
-              if (GDO_V1_CMD_IS_VALID(rx_buffer[i]) || (i > 0 && GDO_V1_CMD_IS_VALID(rx_buffer[i-1])))
+              if (GDO_V1_CMD_IS_VALID(rx_buffer[i]) || (i > 0 && GDO_V1_CMD_IS_VALID(rx_buffer[i - 1])))
               {
                 // Keep valid commands and their response bytes
                 filtered_buffer[filtered_index++] = rx_buffer[i];
@@ -2149,7 +2213,7 @@ static void gdo_main_task(void *arg)
                 ESP_LOGD(TAG, "Filtering out invalid/noise byte: 0x%02x", rx_buffer[i]);
               }
             }
-            
+
             // Process filtered buffer in pairs
             uint8_t pkt[2];
             for (uint8_t i = 0; i < filtered_index - 1; i += 2)
@@ -2159,7 +2223,7 @@ static void gdo_main_task(void *arg)
               print_buffer(g_status.protocol, pkt, false);
               decode_v1_packet(pkt);
             }
-            
+
             // Handle any remaining byte
             if (filtered_index % 2 != 0)
             {
@@ -2314,6 +2378,9 @@ static void gdo_main_task(void *arg)
       case GDO_EVENT_SET_TTC:
         cb_event = GDO_CB_EVENT_SET_TTC;
         break;
+      case GDO_EVENT_CANCEL_TTC:
+        cb_event = GDO_CB_EVENT_CANCEL_TTC;
+        break;
       case GDO_EVENT_PAIRED_DEVICES_UPDATE:
         cb_event = GDO_CB_EVENT_PAIRED_DEVICES;
         break;
@@ -2345,49 +2412,47 @@ static void gdo_main_task(void *arg)
 
 static void update_door_state(const gdo_door_state_t door_state)
 {
-  static int64_t start_opening;
-  static int64_t start_closing;
+  static int64_t start_opening = 0;
+  static int64_t start_closing = 0;
+  static int32_t open_counter = 0;
+  static int64_t open_average = 0;
+  static int32_t close_counter = 0;
+  static int64_t close_average = 0;
+#define AVERAGE_OVER 5 // the number of door open/close operations we will average over
 
-  if (!g_status.open_ms)
+  if (door_state == GDO_DOOR_STATE_OPENING && g_status.door == GDO_DOOR_STATE_CLOSED)
   {
-    if (door_state == GDO_DOOR_STATE_OPENING &&
-        g_status.door == GDO_DOOR_STATE_CLOSED)
-    {
-      start_opening = esp_timer_get_time();
-      ESP_LOGD(TAG, "Record start time of door opening: %lld", start_opening / 1000LL);
-    }
-    if (door_state == GDO_DOOR_STATE_OPEN &&
-        g_status.door == GDO_DOOR_STATE_OPENING && start_opening != 0)
-    {
-      g_status.open_ms = (uint16_t)((esp_timer_get_time() - start_opening) / 1000LL);
-      ESP_LOGD(TAG, "Open time: %u", g_status.open_ms);
-      send_event(GDO_CB_EVENT_OPEN_DURATION_MEASUREMENT);
-    }
-    if (door_state == GDO_DOOR_STATE_STOPPED)
-    {
-      start_opening = -1;
-    }
+    start_opening = esp_timer_get_time();
+    ESP_LOGD(TAG, "Record start time of door opening: %lld", start_opening / 1000LL);
   }
-
-  if (!g_status.close_ms)
+  else if (door_state == GDO_DOOR_STATE_OPEN && g_status.door == GDO_DOOR_STATE_OPENING && start_opening > 0)
   {
-    if (door_state == GDO_DOOR_STATE_CLOSING &&
-        g_status.door == GDO_DOOR_STATE_OPEN)
-    {
-      start_closing = esp_timer_get_time();
-      ESP_LOGD(TAG, "Record start time of door closing: %lld", start_closing / 1000LL);
-    }
-    if (door_state == GDO_DOOR_STATE_CLOSED &&
-        g_status.door == GDO_DOOR_STATE_CLOSING && start_closing != 0)
-    {
-      g_status.close_ms = (uint16_t)((esp_timer_get_time() - start_closing) / 1000LL);
-      ESP_LOGD(TAG, "Close time: %u", g_status.close_ms);
-      send_event(GDO_CB_EVENT_CLOSE_DURATION_MEASUREMENT);
-    }
-    if (door_state == GDO_DOOR_STATE_STOPPED)
-    {
-      start_closing = -1;
-    }
+    int64_t open_duration = esp_timer_get_time() - start_opening;
+    open_counter++;
+    open_average += (open_duration - open_average) / ((AVERAGE_OVER < open_counter) ? AVERAGE_OVER : open_counter);
+    g_status.open_ms = (uint16_t)(open_average / 1000LL);
+    ESP_LOGD(TAG, "Door open duration: %lldms, average: %ums", open_duration / 1000LL, g_status.open_ms);
+    queue_event((gdo_event_t){GDO_EVENT_DOOR_OPEN_DURATION_MEASUREMENT});
+  }
+  else if (door_state == GDO_DOOR_STATE_CLOSING && g_status.door == GDO_DOOR_STATE_OPEN)
+  {
+    start_closing = esp_timer_get_time();
+    ESP_LOGD(TAG, "Record start time of door closing: %lld", start_closing / 1000LL);
+  }
+  else if (door_state == GDO_DOOR_STATE_CLOSED && g_status.door == GDO_DOOR_STATE_CLOSING && start_closing > 0)
+  {
+    int64_t close_duration = esp_timer_get_time() - start_closing;
+    close_counter++;
+    close_average += (close_duration - close_average) / ((AVERAGE_OVER < close_counter) ? AVERAGE_OVER : close_counter);
+    g_status.close_ms = (uint16_t)(close_average / 1000LL);
+    ESP_LOGD(TAG, "Door close duration: %lldms, average: %ums", close_duration / 1000LL, g_status.close_ms);
+    queue_event((gdo_event_t){GDO_EVENT_DOOR_CLOSE_DURATION_MEASUREMENT});
+  }
+  else if (door_state == GDO_DOOR_STATE_STOPPED)
+  {
+    // If door is stopped (neither fully open or fully closed) then abort measuring duration
+    start_opening = 0;
+    start_closing = 0;
   }
 
   if (door_state == GDO_DOOR_STATE_OPENING || door_state == GDO_DOOR_STATE_CLOSING)
@@ -2448,7 +2513,7 @@ static void update_door_state(const gdo_door_state_t door_state)
   static int32_t previous_door_target = -1;
   if ((door_state != g_status.door) || (previous_door_position != g_status.door_position) || (previous_door_target != g_status.door_target))
   {
-    ESP_LOGD(TAG, "Door state: %s", gdo_door_state_str[door_state]);
+    ESP_LOGD(TAG, "Door state: %s", gdo_door_state_to_string(door_state));
     g_status.door = door_state;
     previous_door_position = g_status.door_position;
     previous_door_target = g_status.door_target;
@@ -2456,7 +2521,7 @@ static void update_door_state(const gdo_door_state_t door_state)
   }
   else
   {
-    ESP_LOGV(TAG, "Door state: %s", gdo_door_state_str[door_state]);
+    ESP_LOGV(TAG, "Door state: %s", gdo_door_state_to_string(door_state));
   }
 }
 
@@ -2559,13 +2624,13 @@ inline static void update_light_state(gdo_light_state_t light_state)
 {
   if (light_state != g_status.light)
   {
-    ESP_LOGD(TAG, "Light state: %s", gdo_light_state_str[light_state]);
+    ESP_LOGD(TAG, "Light state: %s", gdo_light_state_to_string(light_state));
     g_status.light = light_state;
     send_event(GDO_CB_EVENT_LIGHT);
   }
   else
   {
-    ESP_LOGV(TAG, "Light state: %s", gdo_light_state_str[light_state]);
+    ESP_LOGV(TAG, "Light state: %s", gdo_light_state_to_string(light_state));
   }
 }
 
@@ -2577,13 +2642,13 @@ inline static void update_lock_state(gdo_lock_state_t lock_state)
 {
   if (lock_state != g_status.lock)
   {
-    ESP_LOGD(TAG, "Lock state: %s", gdo_lock_state_str[lock_state]);
+    ESP_LOGD(TAG, "Lock state: %s", gdo_lock_state_to_string(lock_state));
     g_status.lock = lock_state;
     send_event(GDO_CB_EVENT_LOCK);
   }
   else
   {
-    ESP_LOGV(TAG, "Lock state: %s", gdo_lock_state_str[lock_state]);
+    ESP_LOGV(TAG, "Lock state: %s", gdo_lock_state_to_string(lock_state));
   }
 }
 
@@ -2597,16 +2662,20 @@ update_obstruction_state(gdo_obstruction_state_t obstruction_state)
 {
   if (obstruction_state != g_status.obstruction)
   {
-    ESP_LOGD(TAG, "Obstruction state: %s", gdo_obstruction_state_str[obstruction_state]);
+    ESP_LOGD(TAG, "Obstruction state: %s", gdo_obstruction_state_to_string(obstruction_state));
     g_status.obstruction = obstruction_state;
-    // This function can be called from obstruction timer... therefore...
-    // We use queue event rather than send event to ensure that the callback
-    // function is called from the main thread (same thread as all other callbacks).
-    queue_event((gdo_event_t){GDO_EVENT_OBST});
+    // Only send event for valid states (not MAX/uninitialized)
+    if (obstruction_state < GDO_OBSTRUCTION_STATE_MAX)
+    {
+      // This function can be called from obstruction timer... therefore...
+      // We use queue event rather than send event to ensure that the callback
+      // function is called from the main thread (same thread as all other callbacks).
+      queue_event((gdo_event_t){GDO_EVENT_OBST});
+    }
   }
   else
   {
-    ESP_LOGV(TAG, "Obstruction state: %s", gdo_obstruction_state_str[obstruction_state]);
+    ESP_LOGV(TAG, "Obstruction state: %s", gdo_obstruction_state_to_string(obstruction_state));
   }
 }
 
@@ -2618,15 +2687,19 @@ update_obstruction_state(gdo_obstruction_state_t obstruction_state)
  */
 inline static void update_learn_state(gdo_learn_state_t learn_state)
 {
-  ESP_LOGD(TAG, "Learn state: %s", gdo_learn_state_str[learn_state]);
   if (learn_state != g_status.learn)
   {
+    ESP_LOGD(TAG, "Learn state: %s", gdo_learn_state_to_string(learn_state));
     g_status.learn = learn_state;
     send_event(GDO_CB_EVENT_LEARN);
     if (learn_state == GDO_LEARN_STATE_INACTIVE && g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V2)
     {
       get_paired_devices(GDO_PAIRED_DEVICE_TYPE_ALL);
     }
+  }
+  else
+  {
+    ESP_LOGV(TAG, "Learn state: %s", gdo_learn_state_to_string(learn_state));
   }
 }
 
@@ -2701,7 +2774,7 @@ inline static void handle_lock_action(gdo_lock_action_t lock_action)
  */
 inline static void update_motor_state(gdo_motor_state_t motor_state)
 {
-  ESP_LOGD(TAG, "Motor state: %s", gdo_motor_state_str[motor_state]);
+  ESP_LOGD(TAG, "Motor state: %s", gdo_motor_state_to_string(motor_state));
   if (motor_state != g_status.motor)
   {
     g_status.motor = motor_state;
@@ -2715,7 +2788,7 @@ inline static void update_motor_state(gdo_motor_state_t motor_state)
  */
 inline static void update_button_state(gdo_button_state_t button_state)
 {
-  ESP_LOGD(TAG, "Button state: %s", gdo_button_state_str[button_state]);
+  ESP_LOGD(TAG, "Button state: %s", gdo_button_state_to_string(button_state));
   if (button_state == GDO_BUTTON_STATE_RELEASED)
   {
     // Why are we calling get status with every button release?
@@ -2735,10 +2808,9 @@ inline static void update_button_state(gdo_button_state_t button_state)
  */
 inline static void update_motion_state(gdo_motion_state_t motion_state)
 {
-  ESP_LOGD(TAG, "Motion state: %s", gdo_motion_state_str[motion_state]);
+  ESP_LOGD(TAG, "Motion state: %s", gdo_motion_state_to_string(motion_state));
   if (motion_state == GDO_MOTION_STATE_DETECTED)
   {
-    esp_timer_stop(motion_detect_timer);
     esp_timer_start_once(motion_detect_timer, 3000 * 1000);
   }
 
@@ -2914,7 +2986,7 @@ inline static void update_paired_devices(gdo_paired_device_type_t type,
  */
 inline static void update_battery_state(gdo_battery_state_t battery_state)
 {
-  ESP_LOGD(TAG, "Battery state: %s", gdo_battery_state_str[battery_state]);
+  ESP_LOGD(TAG, "Battery state: %s", gdo_battery_state_to_string(battery_state));
   if (battery_state != g_status.battery)
   {
     g_status.battery = battery_state;

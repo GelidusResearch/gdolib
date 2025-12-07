@@ -19,6 +19,10 @@
 #include "gdo.h"
 #include "gdo_priv.h"
 
+#ifndef min
+#define min(a, b) (((int)(a) < (int)(b)) ? (a) : (b))
+#endif
+
 static const char *TAG = "gdo_utils";
 
 const char *gdo_door_state_str[] = {
@@ -28,6 +32,7 @@ const char *gdo_door_state_str[] = {
     "Stopped",
     "Opening",
     "Closing",
+    "Unknown 6",
 };
 
 const char *gdo_light_state_str[] = {
@@ -67,15 +72,16 @@ const char *gdo_button_state_str[] = {
 };
 
 const char *gdo_battery_state_str[] = {
-    "Unknown",
-    "Unknown",
-    "Unknown",
-    "Unknown",
-    "Unknown",
-    "Unknown",
-    "Charging", // 6
-    "Unknown",
-    "Full", // 8
+    "Unknown 0",
+    "Unknown 1",
+    "Unknown 2",
+    "Unknown 3",
+    "Unknown 4",
+    "Unknown 5",
+    "Charging",
+    "Unknown 7",
+    "Full",
+    "Unknown 9",
 };
 
 const char *gdo_learn_state_str[] = {
@@ -121,6 +127,7 @@ const char *gdo_protocol_type_str[] = {
     "Security+ 2.0",
     "Security+ 1.0 with smart panel",
     "Dry Contact",
+    "Unknown 5",
 };
 
 const char *cmd_to_string(gdo_command_t cmd)
@@ -239,70 +246,70 @@ void print_buffer(gdo_protocol_type_t protocol, uint8_t *buf, bool is_tx)
 
 const char *gdo_door_state_to_string(gdo_door_state_t state)
 {
-    return gdo_door_state_str[state];
+    return gdo_door_state_str[min(state, GDO_DOOR_STATE_MAX)];
 }
 
 const char *gdo_light_state_to_string(gdo_light_state_t state)
 {
-    return gdo_light_state_str[state];
+    return gdo_light_state_str[min(state, GDO_LIGHT_STATE_MAX)];
 }
 
 const char *gdo_lock_state_to_string(gdo_lock_state_t state)
 {
-    return gdo_lock_state_str[state];
+    return gdo_lock_state_str[min(state, GDO_LIGHT_STATE_MAX)];
 }
 
 const char *gdo_motion_state_to_string(gdo_motion_state_t state)
 {
-    return gdo_motion_state_str[state];
+    return gdo_motion_state_str[min(state, GDO_MOTION_STATE_MAX)];
 }
 
 const char *gdo_obstruction_state_to_string(gdo_obstruction_state_t state)
 {
-    return gdo_obstruction_state_str[state];
+    return gdo_obstruction_state_str[min(state, GDO_OBSTRUCTION_STATE_MAX)];
 }
 
 const char *gdo_motor_state_to_string(gdo_motor_state_t state)
 {
-    return gdo_motor_state_str[state];
+    return gdo_motor_state_str[min(state, GDO_MOTOR_STATE_MAX)];
 }
 
 const char *gdo_button_state_to_string(gdo_button_state_t state)
 {
-    return gdo_button_state_str[state];
+    return gdo_button_state_str[min(state, GDO_BUTTON_STATE_MAX)];
 }
 
 const char *gdo_battery_state_to_string(gdo_battery_state_t state)
 {
-    return gdo_battery_state_str[state];
+    return gdo_battery_state_str[min(state, GDO_BATT_STATE_MAX)];
 }
 
 const char *gdo_learn_state_to_string(gdo_learn_state_t state)
 {
-    return gdo_learn_state_str[state];
+    return gdo_learn_state_str[min(state, GDO_LEARN_STATE_MAX)];
 }
 
 const char *gdo_paired_device_type_to_string(gdo_paired_device_type_t type)
 {
-    return gdo_paired_device_type_str[type];
+    return gdo_paired_device_type_str[min(type, GDO_PAIRED_DEVICE_TYPE_MAX)];
 }
 
 const char *gdo_light_action_to_string(gdo_light_action_t action)
 {
-    return gdo_light_action_str[action];
+    return gdo_light_action_str[min(action, GDO_LIGHT_ACTION_MAX)];
 }
 
 const char *gdo_lock_action_to_string(gdo_lock_action_t action)
 {
-    return gdo_lock_action_str[action];
+    return gdo_lock_action_str[min(action, GDO_LOCK_ACTION_MAX)];
 }
 
 const char *gdo_door_action_to_string(gdo_door_action_t action)
 {
-    return gdo_door_action_str[action];
+    return gdo_door_action_str[min(action, GDO_DOOR_ACTION_MAX)];
 }
 
 const char *gdo_protocol_type_to_string(gdo_protocol_type_t protocol)
 {
-    return gdo_protocol_type_str[protocol];
+    return gdo_protocol_type_str[min(protocol, GDO_PROTOCOL_MAX)];
 }

@@ -83,9 +83,9 @@ extern "C"
     typedef enum
     {
         GDO_BATT_STATE_UNKNOWN = 0,
-        GDO_BATT_STATE_CHARGING = 0x6,
-        GDO_BATT_STATE_FULL = 0x8,
-        GDO_BATT_STATE_MAX = 0xff,
+        GDO_BATT_STATE_CHARGING = 6,
+        GDO_BATT_STATE_FULL = 8,
+        GDO_BATT_STATE_MAX = 9,
     } gdo_battery_state_t;
 
     typedef enum
@@ -108,7 +108,7 @@ extern "C"
     typedef enum
     {
         GDO_PROTOCOL_UNKNOWN = 0,
-        GDO_PROTOCOL_SEC_PLUS_V1 = 1,
+        GDO_PROTOCOL_SEC_PLUS_V1,
         GDO_PROTOCOL_SEC_PLUS_V2,
         GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL,
         GDO_PROTOCOL_DRY_CONTACT,
@@ -146,6 +146,14 @@ extern "C"
         uint8_t total_accessories;
         uint8_t total_all;
     } gdo_paired_device_t;
+
+    typedef struct
+    {
+        uint32_t pulses;               // Total pulses received on obstruction pin
+        uint32_t current_pulse_count;  // Current pulse count in measurement window
+        uint64_t last_pulse_time_us;   // Timestamp of last pulse (microseconds)
+        uint32_t time_since_last_pulse_ms; // Time since last pulse in milliseconds
+    } gdo_obstruction_pulse_stats_t;
 
     typedef struct
     {
@@ -237,6 +245,15 @@ extern "C"
      * @note This function is perfomred in a critical section and should be called with caution.
      */
     esp_err_t gdo_get_status(gdo_status_t *status);
+
+    /**
+     * @brief Get the current obstruction pulse statistics.
+     * @param stats a pointer to the obstruction pulse stats structure to be filled.
+     * @param clear_counters if true, clears all pulse counters after reading.
+     * @return ESP_OK on success, ESP_ERR_INVALID_ARG if stats is NULL.
+     * @note This function provides real-time statistics about obstruction sensor pulse counts.
+     */
+    esp_err_t gdo_get_obstruction_pulse_stats(gdo_obstruction_pulse_stats_t *stats, bool clear_counters);
 
     /**
      * @brief Starts the task that syncs the state of the GDO with the controller.
