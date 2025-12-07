@@ -173,8 +173,8 @@ const char *cmd_to_string(gdo_command_t cmd)
         return "SET_TTC";
     case GDO_CMD_CANCEL_TTC:
         return "CANCEL_TTC";
-    case GDO_CMD_UPDATE_TTC:
-        return "UPDATE_TTC";
+    case GDO_CMD_TTC:
+        return "TTC";
     case GDO_CMD_GET_OPENINGS:
         return "GET_OPENINGS";
     case GDO_CMD_OPENINGS:

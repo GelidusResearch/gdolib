@@ -1971,7 +1971,7 @@ static void decode_packet(uint8_t *packet)
   {
     update_openings(nibble, ((byte1 << 8) | byte2));
   }
-  else if (cmd == GDO_CMD_UPDATE_TTC)
+  else if (cmd == GDO_CMD_TTC)
   {
     update_ttc((byte1 << 8) | byte2);
     send_event(GDO_CB_EVENT_UPDATE_TTC);
@@ -2308,7 +2308,7 @@ static void gdo_main_task(void *arg)
       case GDO_EVENT_MOTION_UPDATE:
         cb_event = GDO_CB_EVENT_MOTION;
         break;
-      case GDO_EVENT_UPDATE_TTC:
+      case GDO_EVENT_TTC:
         cb_event = GDO_CB_EVENT_UPDATE_TTC;
         break;
       case GDO_EVENT_SET_TTC:
