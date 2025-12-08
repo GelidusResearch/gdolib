@@ -2044,6 +2044,13 @@ static void decode_packet(uint8_t *packet)
     update_ttc((byte1 << 8) | byte2);
     send_event(GDO_CB_EVENT_SET_TTC);
   }
+  else if (cmd == GDO_CMD_CANCEL_TTC)
+  {
+    // CANCEL_TTC toggles the TTC enabled state (Hold/Release from wall panel)
+    g_status.ttc_enabled = !g_status.ttc_enabled;
+    ESP_LOGI(TAG, "TTC %s by device 0x%02x", g_status.ttc_enabled ? "enabled" : "disabled", byte1);
+    send_event(GDO_CB_EVENT_CANCEL_TTC);
+  }
   else if (cmd == GDO_CMD_PAIRED_DEVICES)
   {
     update_paired_devices(nibble, byte2);
@@ -2877,11 +2884,32 @@ esp_err_t gdo_set_time_to_close(uint16_t time_to_close)
   uint8_t byte2 = (uint8_t)time_to_close;
   uint8_t nibble = 1;
   update_ttc(time_to_close);
-  queue_command(GDO_CMD_SET_TTC, nibble, byte1, byte2);
-  // This can be called from unknown thread... therefore...
-  // We use queue event rather than send event to ensure that the callback
-  // function is called from the main thread (same thread as all other callbacks).
+
+  // Send CANCEL_TTC when disabling (time_to_close == 0), otherwise send SET_TTC
+  if (time_to_close == 0)
+  {
+    queue_command(GDO_CMD_CANCEL_TTC, nibble, 0x05, 0x00);
+  }
+  else
+  {
+    queue_command(GDO_CMD_SET_TTC, nibble, byte1, byte2);
+  }
   queue_event((gdo_event_t){GDO_EVENT_SET_TTC});
+  return err;
+}
+
+/**
+ * @brief Cancel or toggle the time to close feature (Hold/Release TTC from wall panel)
+ * @return ESP_OK on success
+ */
+esp_err_t gdo_cancel_ttc(void)
+{
+  esp_err_t err = ESP_OK;
+  uint8_t byte1 = 0x05;
+  uint8_t byte2 = 0x00;
+  uint8_t nibble = 1;
+  queue_command(GDO_CMD_CANCEL_TTC, nibble, byte1, byte2);
+  queue_event((gdo_event_t){GDO_EVENT_CANCEL_TTC});
   return err;
 }
 

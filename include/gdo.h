@@ -453,12 +453,18 @@ extern "C"
     esp_err_t gdo_set_protocol(gdo_protocol_type_t protocol);
 
     /**
-     * @brief Sets the time to close in minutes
+     * @brief Sets the time-to-close value for the door.
      * @param time_to_close The time to close value.
      * @return ESP_OK on success, ESP_ERR_INVALID_ARG if the time is invalid,
      * ESP_ERR_INVALID_STATE if the time is out of range.
      */
     esp_err_t gdo_set_time_to_close(uint16_t time_to_close);
+
+    /**
+     * @brief Cancel or toggle the time-to-close feature (Hold/Release TTC).
+     * @return ESP_OK on success.
+     */
+    esp_err_t gdo_cancel_ttc(void);
 
     /**
      * @brief Sets the time the door takes to open from fully closed in milliseconds.
