@@ -2841,6 +2841,7 @@ inline static void update_openings(uint8_t flag, uint16_t count)
     if (g_status.openings != count)
     {
       g_status.openings = count;
+      send_event(GDO_CB_EVENT_OPENINGS);
     }
   }
   // Ignoring openings, not from our request
