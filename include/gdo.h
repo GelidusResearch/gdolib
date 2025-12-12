@@ -170,7 +170,6 @@ extern "C"
         gdo_paired_device_t paired_devices;   // Paired devices
         gdo_door_state_t last_move_direction; // Last move direction
         bool synced;                          // Synced state
-        bool ttc_enabled;                     // ttc active
         bool toggle_only;                     // Used when the door opener only supports the toggle command.
         bool obst_override;                   // Used when the door opener has no obstruction sensors.
         bool tof_timer_active;                // ToF interval timer active
@@ -459,6 +458,12 @@ extern "C"
      * ESP_ERR_INVALID_STATE if the time is out of range.
      */
     esp_err_t gdo_set_time_to_close(uint16_t time_to_close);
+
+    /**
+     * @brief Cancel or toggle the time-to-close feature (Hold/Release TTC).
+     * @return ESP_OK on success.
+     */
+    esp_err_t gdo_cancel_ttc(void);
 
     /**
      * @brief Sets the time the door takes to open from fully closed in milliseconds.

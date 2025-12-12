@@ -89,7 +89,6 @@ static gdo_status_t g_status = {
                        GDO_PAIRED_DEVICE_COUNT_UNKNOWN,
                        GDO_PAIRED_DEVICE_COUNT_UNKNOWN},
     .synced = false,
-    .ttc_enabled = false,
     .openings = 0,
     .ttc_seconds = 0,
     .open_ms = 0,
@@ -712,8 +711,6 @@ esp_err_t gdo_door_open(void)
   if (g_status.door == GDO_DOOR_STATE_OPENING ||
       g_status.door == GDO_DOOR_STATE_OPEN)
   {
-    if (g_status.ttc_enabled == true)
-      gdo_set_time_to_close(g_ttc_delay_s);
     ESP_LOGI(TAG, "Door already opening or open, ignore request to open door");
     return ESP_OK;
   }
@@ -763,8 +760,6 @@ esp_err_t gdo_door_stop(void)
  */
 esp_err_t gdo_door_toggle(void)
 {
-  if (g_status.ttc_enabled == true)
-    gdo_set_time_to_close(g_ttc_delay_s);
   return send_door_action(GDO_DOOR_ACTION_TOGGLE);
 }
 
@@ -2034,15 +2029,18 @@ static void decode_packet(uint8_t *packet)
   {
     update_openings(nibble, ((byte1 << 8) | byte2));
   }
-  else if (cmd == GDO_CMD_TTC)
+  else if (cmd == GDO_CMD_UPDATE_TTC)
   {
     update_ttc((byte1 << 8) | byte2);
     send_event(GDO_CB_EVENT_UPDATE_TTC);
   }
   else if (cmd == GDO_CMD_SET_TTC)
   {
-    update_ttc((byte1 << 8) | byte2);
     send_event(GDO_CB_EVENT_SET_TTC);
+  }
+  else if (cmd == GDO_CMD_CANCEL_TTC)
+  {
+    send_event(GDO_CB_EVENT_CANCEL_TTC);
   }
   else if (cmd == GDO_CMD_PAIRED_DEVICES)
   {
@@ -2372,7 +2370,7 @@ static void gdo_main_task(void *arg)
       case GDO_EVENT_MOTION_UPDATE:
         cb_event = GDO_CB_EVENT_MOTION;
         break;
-      case GDO_EVENT_TTC:
+      case GDO_EVENT_UPDATE_TTC:
         cb_event = GDO_CB_EVENT_UPDATE_TTC;
         break;
       case GDO_EVENT_SET_TTC:
@@ -2481,8 +2479,6 @@ static void update_door_state(const gdo_door_state_t door_state)
     else if (door_state == GDO_DOOR_STATE_OPEN)
     {
       g_status.door_position = 0;
-      if ((g_status.ttc_enabled == true) && (g_status.ttc_seconds == 0))
-        gdo_set_time_to_close(g_ttc_delay_s);
     }
     else if (door_state == GDO_DOOR_STATE_CLOSED)
     {
@@ -2845,7 +2841,6 @@ inline static void update_openings(uint8_t flag, uint16_t count)
     if (g_status.openings != count)
     {
       g_status.openings = count;
-      send_event(GDO_CB_EVENT_OPENINGS);
     }
   }
   // Ignoring openings, not from our request
@@ -2870,18 +2865,28 @@ inline static void update_ttc(uint16_t ttc)
  */
 esp_err_t gdo_set_time_to_close(uint16_t time_to_close)
 {
-  g_ttc_delay_s = time_to_close;
-  g_status.ttc_enabled = (time_to_close > 0) ? 1 : 0;
   esp_err_t err = ESP_OK;
   uint8_t byte1 = (time_to_close >> 8);
   uint8_t byte2 = (uint8_t)time_to_close;
   uint8_t nibble = 1;
   update_ttc(time_to_close);
   queue_command(GDO_CMD_SET_TTC, nibble, byte1, byte2);
-  // This can be called from unknown thread... therefore...
-  // We use queue event rather than send event to ensure that the callback
-  // function is called from the main thread (same thread as all other callbacks).
   queue_event((gdo_event_t){GDO_EVENT_SET_TTC});
+  return err;
+}
+
+/**
+ * @brief Cancel or toggle the time to close feature (Hold/Release TTC from wall panel)
+ * @return ESP_OK on success
+ */
+esp_err_t gdo_cancel_ttc(void)
+{
+  esp_err_t err = ESP_OK;
+  uint8_t byte1 = 0x05;
+  uint8_t byte2 = 0x00;
+  uint8_t nibble = 1;
+  queue_command(GDO_CMD_CANCEL_TTC, nibble, byte1, byte2);
+  queue_event((gdo_event_t){GDO_EVENT_CANCEL_TTC});
   return err;
 }
 
