@@ -1231,128 +1231,16 @@ static void gdo_sync_task(void *arg)
 {
   bool synced = true;
 
-  // Try V2 first if protocol not already determined to be V1
-  if (g_status.protocol != GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL &&
-      g_status.protocol != GDO_PROTOCOL_SEC_PLUS_V1)
+  if (g_status.protocol != GDO_PROTOCOL_SEC_PLUS_V2)
   {
-    // V1 setup has somehow failed.  Try and do a V2 sync
-    ESP_LOGI(TAG, "SYNC TASK: Initialize V2 syncing");
-    uint32_t timeout = esp_timer_get_time() / 1000 + 5000;
-    uint8_t sync_stage = 0;
-    g_status.protocol = GDO_PROTOCOL_SEC_PLUS_V2;
-    uart_set_baudrate(g_config.uart_num, 9600);
-    uart_set_parity(g_config.uart_num, UART_PARITY_DISABLE);
+    // Protocol not previously forced to V2, so try a V1 sync.
+    uart_set_baudrate(g_config.uart_num, 1200);
+    uart_set_parity(g_config.uart_num, UART_PARITY_EVEN);
     uart_flush(g_config.uart_num);
     xQueueReset(gdo_event_queue);
-    xQueueReset(gdo_tx_queue);
 
-    // We send a get openings because if we have a new client ID then the
-    // first command may be ignored, and sometime doors will throw away
-    // duplicate commands in a row.  So we want the get_status in following
-    // loop to actually work.
-    get_openings();
-
-    for (;;)
-    {
-      if ((esp_timer_get_time() / 1000) > timeout)
-      {
-        synced = false;
-        break;
-      }
-
-      vTaskDelay(pdMS_TO_TICKS((g_tx_delay_ms * 2 > 500) ? g_tx_delay_ms * 2 : 500));
-
-      if (g_status.door == GDO_DOOR_STATE_UNKNOWN)
-      {
-        ESP_LOGI(TAG, "SYNC TASK: Getting status");
-        get_status();
-        continue;
-      }
-      else if (sync_stage < 1)
-      {
-        sync_stage = 1;
-        timeout += 1000;
-      }
-
-      if (sync_stage < 2)
-      {
-        ESP_LOGI(TAG, "SYNC TASK: Getting openings");
-        get_openings();
-        sync_stage = 2;
-        timeout += 1000;
-      }
-
-      if (g_status.paired_devices.total_all == GDO_PAIRED_DEVICE_COUNT_UNKNOWN)
-      {
-        ESP_LOGI(TAG, "SYNC TASK: Getting all paired devices");
-        get_paired_devices(GDO_PAIRED_DEVICE_TYPE_ALL);
-        continue;
-      }
-      else if (sync_stage < 3)
-      {
-        sync_stage = 3;
-        timeout += 1000;
-      }
-
-      if (g_status.paired_devices.total_remotes == GDO_PAIRED_DEVICE_COUNT_UNKNOWN)
-      {
-        ESP_LOGI(TAG, "SYNC TASK: Getting remotes");
-        get_paired_devices(GDO_PAIRED_DEVICE_TYPE_REMOTE);
-        continue;
-      }
-      else if (sync_stage < 4)
-      {
-        sync_stage = 4;
-        timeout += 1000;
-      }
-
-      if (g_status.paired_devices.total_keypads == GDO_PAIRED_DEVICE_COUNT_UNKNOWN)
-      {
-        ESP_LOGI(TAG, "SYNC TASK: Getting keypads");
-        get_paired_devices(GDO_PAIRED_DEVICE_TYPE_KEYPAD);
-        continue;
-      }
-      else if (sync_stage < 5)
-      {
-        sync_stage = 5;
-        timeout += 1000;
-      }
-
-      if (g_status.paired_devices.total_wall_controls == GDO_PAIRED_DEVICE_COUNT_UNKNOWN)
-      {
-        ESP_LOGI(TAG, "SYNC TASK: Getting wall controls");
-        get_paired_devices(GDO_PAIRED_DEVICE_TYPE_WALL_CONTROL);
-        continue;
-      }
-      else if (sync_stage < 6)
-      {
-        sync_stage = 6;
-        timeout += 1000;
-      }
-
-      if (g_status.paired_devices.total_accessories == GDO_PAIRED_DEVICE_COUNT_UNKNOWN)
-      {
-        ESP_LOGI(TAG, "SYNC TASK: Getting accessories");
-        get_paired_devices(GDO_PAIRED_DEVICE_TYPE_ACCESSORY);
-        continue;
-      }
-
-      queue_event((gdo_event_t){GDO_EVENT_PAIRED_DEVICES_UPDATE});
-      break;
-    }
-
-    // If V2 sync failed and protocol not forced, try V1
-    if (!synced && !g_protocol_forced)
-    {
-      ESP_LOGW(TAG, "SYNC TASK: V2 sync failed, trying V1");
-      // Try V1 sync
-      uart_set_baudrate(g_config.uart_num, 1200);
-      uart_set_parity(g_config.uart_num, UART_PARITY_EVEN);
-      uart_flush(g_config.uart_num);
-      xQueueReset(gdo_event_queue);
-
-      // Delay forever if there is a smart panel connected to allow it to come online and sync before we do anything.
-      ulTaskNotifyTake(pdTRUE, g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL ? portMAX_DELAY : pdMS_TO_TICKS(2500));
+    // Delay forever if there is a smart panel connected to allow it to come online and sync before we do anything.
+    ulTaskNotifyTake(pdTRUE, g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL ? portMAX_DELAY : pdMS_TO_TICKS(2500));
 
     if (g_status.door == GDO_DOOR_STATE_UNKNOWN)
     {
@@ -1406,8 +1294,113 @@ static void gdo_sync_task(void *arg)
       synced = true;
       goto done;
     }
-    } // end V1 fallback block
-  } // end V2 first attempt
+  }
+
+  // V1 setup has somehow failed.  Try and do a V2 sync
+  ESP_LOGI(TAG, "SYNC TASK: Initialize V2 syncing");
+  uint32_t timeout = esp_timer_get_time() / 1000 + 5000;
+  uint8_t sync_stage = 0;
+  g_status.protocol = GDO_PROTOCOL_SEC_PLUS_V2;
+  uart_set_baudrate(g_config.uart_num, 9600);
+  uart_set_parity(g_config.uart_num, UART_PARITY_DISABLE);
+  uart_flush(g_config.uart_num);
+  xQueueReset(gdo_event_queue);
+  xQueueReset(gdo_tx_queue);
+
+  // We send a get openings because if we have a new client ID then the
+  // first command may be ignored, and sometime doors will throw away
+  // duplicate commands in a row.  So we want the get_status in following
+  // loop to actually work.
+  get_openings();
+
+  for (;;)
+  {
+    if ((esp_timer_get_time() / 1000) > timeout)
+    {
+      synced = false;
+      break;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS((g_tx_delay_ms * 2 > 500) ? g_tx_delay_ms * 2 : 500));
+
+    if (g_status.door == GDO_DOOR_STATE_UNKNOWN)
+    {
+      ESP_LOGI(TAG, "SYNC TASK: Getting status");
+      get_status();
+      continue;
+    }
+    else if (sync_stage < 1)
+    {
+      sync_stage = 1;
+      timeout += 1000;
+    }
+
+    if (sync_stage < 2)
+    {
+      ESP_LOGI(TAG, "SYNC TASK: Getting openings");
+      get_openings();
+      sync_stage = 2;
+      timeout += 1000;
+    }
+
+    if (g_status.paired_devices.total_all == GDO_PAIRED_DEVICE_COUNT_UNKNOWN)
+    {
+      ESP_LOGI(TAG, "SYNC TASK: Getting all paired devices");
+      get_paired_devices(GDO_PAIRED_DEVICE_TYPE_ALL);
+      continue;
+    }
+    else if (sync_stage < 3)
+    {
+      sync_stage = 3;
+      timeout += 1000;
+    }
+
+    if (g_status.paired_devices.total_remotes == GDO_PAIRED_DEVICE_COUNT_UNKNOWN)
+    {
+      ESP_LOGI(TAG, "SYNC TASK: Getting remotes");
+      get_paired_devices(GDO_PAIRED_DEVICE_TYPE_REMOTE);
+      continue;
+    }
+    else if (sync_stage < 4)
+    {
+      sync_stage = 4;
+      timeout += 1000;
+    }
+
+    if (g_status.paired_devices.total_keypads == GDO_PAIRED_DEVICE_COUNT_UNKNOWN)
+    {
+      ESP_LOGI(TAG, "SYNC TASK: Getting keypads");
+      get_paired_devices(GDO_PAIRED_DEVICE_TYPE_KEYPAD);
+      continue;
+    }
+    else if (sync_stage < 5)
+    {
+      sync_stage = 5;
+      timeout += 1000;
+    }
+
+    if (g_status.paired_devices.total_wall_controls == GDO_PAIRED_DEVICE_COUNT_UNKNOWN)
+    {
+      ESP_LOGI(TAG, "SYNC TASK: Getting wall controls");
+      get_paired_devices(GDO_PAIRED_DEVICE_TYPE_WALL_CONTROL);
+      continue;
+    }
+    else if (sync_stage < 6)
+    {
+      sync_stage = 6;
+      timeout += 1000;
+    }
+
+    if (g_status.paired_devices.total_accessories == GDO_PAIRED_DEVICE_COUNT_UNKNOWN)
+    {
+      ESP_LOGI(TAG, "SYNC TASK: Getting accessories");
+      get_paired_devices(GDO_PAIRED_DEVICE_TYPE_ACCESSORY);
+      continue;
+    }
+
+    queue_event((gdo_event_t){GDO_EVENT_PAIRED_DEVICES_UPDATE});
+    break;
+  }
 
 done:
   g_status.synced = synced;
