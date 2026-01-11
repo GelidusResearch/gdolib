@@ -1937,7 +1937,8 @@ static void decode_v1_packet(uint8_t *packet)
   }
   else if (cmd == V1_CMD_OBSTRUCTION)
   {
-    update_obstruction_state(resp == 0 ? GDO_OBSTRUCTION_STATE_CLEAR : GDO_OBSTRUCTION_STATE_OBSTRUCTED);
+    if (g_config.obst_from_status)
+      update_obstruction_state(resp == 0 ? GDO_OBSTRUCTION_STATE_CLEAR : GDO_OBSTRUCTION_STATE_OBSTRUCTED);
   }
   else if (cmd == V1_CMD_TOGGLE_DOOR_PRESS)
   {

@@ -193,6 +193,7 @@ extern "C"
         uart_port_t uart_num;             // UART port number
         bool obst_from_status;            // Use obstruction status from status message
         bool invert_uart;                 // Invert UART signal
+        bool obst_invert;                 // Invert obstruction input pin logic
         gpio_num_t uart_tx_pin;           // UART TX pin
         gpio_num_t uart_rx_pin;           // UART RX pin
         gpio_num_t obst_in_pin;           // Obstruction input pin
