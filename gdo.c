@@ -95,7 +95,7 @@ static gdo_status_t g_status = {
     .close_ms = 0,
     .door_position = -1,
     .door_target = -1,
-    .client_id = 0,  // Must be set by application before sync
+    .client_id = 0x2908,
     .toggle_only = false,
     .obst_override = false,
     .last_move_direction = GDO_DOOR_STATE_UNKNOWN,
@@ -667,12 +667,6 @@ esp_err_t gdo_get_obstruction_pulse_stats(gdo_obstruction_pulse_stats_t *stats, 
  */
 esp_err_t gdo_sync(void)
 {
-  if (g_status.protocol == GDO_PROTOCOL_DRY_CONTACT)
-  {
-    // dry contact cannot do a sync, door status remains unknown until some activity
-    g_status.synced = true;
-    return ESP_OK;
-  }
 
   if (!gdo_main_task_handle ||
       g_status.synced)
@@ -1230,6 +1224,13 @@ esp_err_t gdo_set_min_command_interval(uint32_t ms)
 static void gdo_sync_task(void *arg)
 {
   bool synced = true;
+  if (g_status.protocol == GDO_PROTOCOL_DRY_CONTACT)
+  {
+    ESP_LOGI(TAG, "SYNC TASK: Dry contact protocol, no sync needed");
+    g_status.synced = true;
+    vTaskDelete(NULL);
+    return;
+  }
 
   if (g_status.protocol != GDO_PROTOCOL_SEC_PLUS_V2)
   {
@@ -1239,7 +1240,7 @@ static void gdo_sync_task(void *arg)
     uart_flush(g_config.uart_num);
     xQueueReset(gdo_event_queue);
 
-    // Delay forever if there is a smart panel connected to allow it to come online and sync before we do anything.
+    // Delay if there is a smart panel connected to allow it to come online and sync before we do anything.
     ulTaskNotifyTake(pdTRUE, g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL ? portMAX_DELAY : pdMS_TO_TICKS(2500));
 
     if (g_status.door == GDO_DOOR_STATE_UNKNOWN)
@@ -1271,9 +1272,6 @@ static void gdo_sync_task(void *arg)
         ESP_LOGW(TAG, "SYNC TASK: secplus V1 panel emulation failed.");
         esp_timer_stop(v1_status_timer);
         esp_timer_delete(v1_status_timer);
-        synced = false;
-        if (g_protocol_forced)
-          goto done; // User forced use of V1, do do not attempt to sync as V2.
       }
       else
       {
@@ -1321,7 +1319,7 @@ static void gdo_sync_task(void *arg)
       break;
     }
 
-    vTaskDelay(pdMS_TO_TICKS((g_tx_delay_ms * 2 > 500) ? g_tx_delay_ms * 2 : 500));
+    vTaskDelay(pdMS_TO_TICKS((g_tx_delay_ms * 2 > 250) ? g_tx_delay_ms * 2 : 250));
 
     if (g_status.door == GDO_DOOR_STATE_UNKNOWN)
     {
@@ -2492,8 +2490,10 @@ static void update_door_state(const gdo_door_state_t door_state)
     }
   }
 
+  // Notify sync task if door state changed from UNKNOWN during V1 detection
+  // This includes UNKNOWN protocol (auto-detect) and V1 protocols
   if (g_status.door == GDO_DOOR_STATE_UNKNOWN &&
-      g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1 &&
+      (g_status.protocol == GDO_PROTOCOL_UNKNOWN || (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1)) &&
       gdo_sync_task_handle)
   {
     xTaskNotifyGive(gdo_sync_task_handle);
@@ -2835,7 +2835,8 @@ inline static void update_openings(uint8_t flag, uint16_t count)
     if (g_status.openings != count)
     {
       g_status.openings = count;
-      send_event(GDO_CB_EVENT_OPENINGS);
+      // Sync Task may be calling this function, so we use queue_event to ensure callback is called from main thread
+      queue_event((gdo_event_t){GDO_EVENT_OPENINGS_UPDATE});
     }
   }
   // Ignoring openings, not from our request
@@ -2976,7 +2977,8 @@ inline static void update_paired_devices(gdo_paired_device_type_t type,
 
   if (g_status.synced && changed)
   {
-    send_event(GDO_CB_EVENT_PAIRED_DEVICES);
+    // Sync Task may be calling this function, so we use queue_event to ensure callback is called from main thread
+    queue_event((gdo_event_t){GDO_EVENT_PAIRED_DEVICES_UPDATE});
   }
 }
 
