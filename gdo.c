@@ -73,7 +73,7 @@ static esp_err_t send_event(gdo_event_type_t event);
 static gdo_event_callback_t g_event_callback;
 
 static gdo_status_t g_status = {
-    .protocol = GDO_PROTOCOL_UNKNOWN,
+    .protocol = 0,
     .door = GDO_DOOR_STATE_UNKNOWN,
     .light = GDO_LIGHT_STATE_MAX,
     .lock = GDO_LOCK_STATE_MAX,
@@ -95,7 +95,7 @@ static gdo_status_t g_status = {
     .close_ms = 0,
     .door_position = -1,
     .door_target = -1,
-    .client_id = 0,  // Must be set by application before sync
+    .client_id = 0,
     .toggle_only = false,
     .obst_override = false,
     .last_move_direction = GDO_DOOR_STATE_UNKNOWN,
@@ -667,12 +667,6 @@ esp_err_t gdo_get_obstruction_pulse_stats(gdo_obstruction_pulse_stats_t *stats, 
  */
 esp_err_t gdo_sync(void)
 {
-  if (g_status.protocol == GDO_PROTOCOL_DRY_CONTACT)
-  {
-    // dry contact cannot do a sync, door status remains unknown until some activity
-    g_status.synced = true;
-    return ESP_OK;
-  }
 
   if (!gdo_main_task_handle ||
       g_status.synced)
@@ -1161,7 +1155,7 @@ esp_err_t gdo_set_protocol(gdo_protocol_type_t protocol)
   if (protocol < GDO_PROTOCOL_MAX)
   {
     g_status.protocol = protocol;
-    g_protocol_forced = protocol > GDO_PROTOCOL_UNKNOWN;
+    g_protocol_forced = protocol > 0;
     return ESP_OK;
   }
   return ESP_ERR_INVALID_ARG;
@@ -1230,196 +1224,151 @@ esp_err_t gdo_set_min_command_interval(uint32_t ms)
 static void gdo_sync_task(void *arg)
 {
   bool synced = true;
-
-  if (g_status.protocol != GDO_PROTOCOL_SEC_PLUS_V2)
+  if (g_status.protocol == GDO_PROTOCOL_DRY_CONTACT)
   {
-    // Protocol not previously forced to V2, so try a V1 sync.
-    uart_set_baudrate(g_config.uart_num, 1200);
-    uart_set_parity(g_config.uart_num, UART_PARITY_EVEN);
+    ESP_LOGI(TAG, "SYNC TASK: Dry contact protocol, no sync needed");
+    goto done;
+  }
+
+    if (g_status.protocol != GDO_PROTOCOL_SEC_PLUS_V2) {
+        uart_set_baudrate(g_config.uart_num, 1200);
+        uart_set_parity(g_config.uart_num, UART_PARITY_EVEN);
+        uart_flush(g_config.uart_num);
+        xQueueReset(gdo_event_queue);
+
+        // Delay forever if there is a smart panel connected to allow it to come online and sync before we do anything.
+        ulTaskNotifyTake(pdTRUE, g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL ? portMAX_DELAY : pdMS_TO_TICKS(2500));
+
+        if (g_status.door == GDO_DOOR_STATE_UNKNOWN) {
+            ESP_LOGW(TAG, "V1 panel not found, trying emulation");
+            esp_timer_create_args_t timer_args = {
+                .callback = v1_status_timer_cb,
+                .arg = NULL,
+                .dispatch_method = ESP_TIMER_TASK,
+                .name = "v1_status_timer"
+            };
+
+            esp_timer_handle_t v1_status_timer;
+            if (esp_timer_create(&timer_args, &v1_status_timer) != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to create V1 status timer");
+                synced = false;
+                goto done;
+            } else {
+                uart_flush(g_config.uart_num);
+                xQueueReset(gdo_event_queue);
+                esp_timer_start_periodic(v1_status_timer, 250 * 1000);
+            }
+
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(5000));
+
+            if (g_status.door == GDO_DOOR_STATE_UNKNOWN && !g_protocol_forced) {
+                ESP_LOGW(TAG, "secplus V1 panel emulation failed, trying secplus V2 panel emulation");
+                esp_timer_stop(v1_status_timer);
+                esp_timer_delete(v1_status_timer);
+            } else {
+                goto done;
+            }
+        } else {
+            ESP_LOGI(TAG, "V1 panel found");
+            g_status.protocol = GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL;
+            goto done;
+        }
+    }
+
+    uint32_t timeout = esp_timer_get_time() / 1000 + 5000;
+    uint8_t sync_stage = 0;
+    g_status.protocol = GDO_PROTOCOL_SEC_PLUS_V2;
+    uart_set_baudrate(g_config.uart_num, 9600);
+    uart_set_parity(g_config.uart_num, UART_PARITY_DISABLE);
     uart_flush(g_config.uart_num);
     xQueueReset(gdo_event_queue);
 
-    // Delay forever if there is a smart panel connected to allow it to come online and sync before we do anything.
-    ulTaskNotifyTake(pdTRUE, g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL ? portMAX_DELAY : pdMS_TO_TICKS(2500));
+    for (;;) {
+        if ((esp_timer_get_time() / 1000) > timeout) {
+            synced = false;
+            break;
+        }
 
-    if (g_status.door == GDO_DOOR_STATE_UNKNOWN)
-    {
-      ESP_LOGW(TAG, "SYNC TASK: V1 panel not found, trying emulation");
-      esp_timer_create_args_t timer_args = {.callback = v1_status_timer_cb,
-                                            .arg = NULL,
-                                            .dispatch_method = ESP_TIMER_TASK,
-                                            .name = "v1_status_timer"};
+        vTaskDelay(pdMS_TO_TICKS((g_tx_delay_ms * 2 > 250) ? g_tx_delay_ms * 2 : 250));
 
-      if (esp_timer_create(&timer_args, &v1_status_timer) != ESP_OK)
-      {
-        ESP_LOGE(TAG, "SYNC TASK: Failed to create V1 status timer");
-        synced = false;
-        goto done;
-      }
-      else
-      {
-        synced = false;
-        uart_flush(g_config.uart_num);
-        xQueueReset(gdo_event_queue);
-        xQueueReset(gdo_tx_queue);
-        esp_timer_start_periodic(v1_status_timer, 250 * 1000);
-      }
+        if (g_status.door == GDO_DOOR_STATE_UNKNOWN) {
+            ESP_LOGV(TAG, "SYNC TASK: Getting status");
+            get_status();
+            continue;
+        } else if (sync_stage < 1) {
+            sync_stage = 1;
+            timeout += 1000;
+        }
 
-      ESP_LOGI(TAG, "SYNC TASK: Wait up to 5 seconds to see if V1 panel emulation working");
-      if (!ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(5000)) && g_status.door == GDO_DOOR_STATE_UNKNOWN)
-      {
-        ESP_LOGW(TAG, "SYNC TASK: secplus V1 panel emulation failed.");
-        esp_timer_stop(v1_status_timer);
-        esp_timer_delete(v1_status_timer);
-        synced = false;
-        if (g_protocol_forced)
-          goto done; // User forced use of V1, do do not attempt to sync as V2.
-      }
-      else
-      {
-        ESP_LOGI(TAG, "SYNC TASK: secplus V1 panel emulation success.");
-        synced = true;
-        goto done;
-      }
-    }
-    else
-    {
-      ESP_LOGI(TAG, "SYNC TASK: Known door state: %s", gdo_door_state_to_string(g_status.door));
-      if (!esp_timer_is_active(v1_status_timer))
-      {
-        // if timer is active then we are emulating a V1 panel, don't change to smart panel
-        ESP_LOGI(TAG, "SYNC TASK: V1 smart panel found");
-        g_status.protocol = GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL;
-      }
-      synced = true;
-      goto done;
-    }
-  }
+        if (g_status.openings == 0) {
+            ESP_LOGI(TAG, "SYNC TASK: Getting openings");
+            get_openings();
+            continue;
+        } else if (sync_stage < 2) {
+            sync_stage = 2;
+            timeout += 1000;
+        }
 
-  // V1 setup has somehow failed.  Try and do a V2 sync
-  ESP_LOGI(TAG, "SYNC TASK: Initialize V2 syncing");
-  uint32_t timeout = esp_timer_get_time() / 1000 + 5000;
-  uint8_t sync_stage = 0;
-  g_status.protocol = GDO_PROTOCOL_SEC_PLUS_V2;
-  uart_set_baudrate(g_config.uart_num, 9600);
-  uart_set_parity(g_config.uart_num, UART_PARITY_DISABLE);
-  uart_flush(g_config.uart_num);
-  xQueueReset(gdo_event_queue);
-  xQueueReset(gdo_tx_queue);
+        if (g_status.paired_devices.total_all == GDO_PAIRED_DEVICE_COUNT_UNKNOWN) {
+            ESP_LOGI(TAG, "SYNC TASK: Getting all paired devices");
+            get_paired_devices(GDO_PAIRED_DEVICE_TYPE_ALL);
+            continue;
+        } else if (sync_stage < 3) {
+            sync_stage = 3;
+            timeout += 1000;
+        }
 
-  // We send a get openings because if we have a new client ID then the
-  // first command may be ignored, and sometime doors will throw away
-  // duplicate commands in a row.  So we want the get_status in following
-  // loop to actually work.
-  get_openings();
+        if (g_status.paired_devices.total_remotes == GDO_PAIRED_DEVICE_COUNT_UNKNOWN) {
+            ESP_LOGI(TAG, "SYNC TASK: Getting remotes");
+            get_paired_devices(GDO_PAIRED_DEVICE_TYPE_REMOTE);
+            continue;
+        } else if (sync_stage < 4) {
+            sync_stage = 4;
+            timeout += 1000;
+        }
 
-  for (;;)
-  {
-    if ((esp_timer_get_time() / 1000) > timeout)
-    {
-      synced = false;
-      break;
-    }
+        if (g_status.paired_devices.total_keypads == GDO_PAIRED_DEVICE_COUNT_UNKNOWN) {
+            ESP_LOGI(TAG, "SYNC TASK: Getting keypads");
+            get_paired_devices(GDO_PAIRED_DEVICE_TYPE_KEYPAD);
+            continue;
+        } else if (sync_stage < 5) {
+            sync_stage = 5;
+            timeout += 1000;
+        }
 
-    vTaskDelay(pdMS_TO_TICKS((g_tx_delay_ms * 2 > 500) ? g_tx_delay_ms * 2 : 500));
+        if (g_status.paired_devices.total_wall_controls == GDO_PAIRED_DEVICE_COUNT_UNKNOWN) {
+            ESP_LOGI(TAG, "SYNC TASK: Getting wall controls");
+            get_paired_devices(GDO_PAIRED_DEVICE_TYPE_WALL_CONTROL);
+            continue;
+        } else if (sync_stage < 6) {
+            sync_stage = 6;
+            timeout += 1000;
+        }
 
-    if (g_status.door == GDO_DOOR_STATE_UNKNOWN)
-    {
-      ESP_LOGI(TAG, "SYNC TASK: Getting status");
-      get_status();
-      continue;
-    }
-    else if (sync_stage < 1)
-    {
-      sync_stage = 1;
-      timeout += 1000;
-    }
+        if (g_status.paired_devices.total_accessories == GDO_PAIRED_DEVICE_COUNT_UNKNOWN) {
+            ESP_LOGI(TAG, "SYNC TASK: Getting accessories");
+            get_paired_devices(GDO_PAIRED_DEVICE_TYPE_ACCESSORY);
+            continue;
+        }
 
-    if (sync_stage < 2)
-    {
-      ESP_LOGI(TAG, "SYNC TASK: Getting openings");
-      get_openings();
-      sync_stage = 2;
-      timeout += 1000;
+        queue_event((gdo_event_t){GDO_EVENT_PAIRED_DEVICES_UPDATE});
+        break;
     }
-
-    if (g_status.paired_devices.total_all == GDO_PAIRED_DEVICE_COUNT_UNKNOWN)
-    {
-      ESP_LOGI(TAG, "SYNC TASK: Getting all paired devices");
-      get_paired_devices(GDO_PAIRED_DEVICE_TYPE_ALL);
-      continue;
-    }
-    else if (sync_stage < 3)
-    {
-      sync_stage = 3;
-      timeout += 1000;
-    }
-
-    if (g_status.paired_devices.total_remotes == GDO_PAIRED_DEVICE_COUNT_UNKNOWN)
-    {
-      ESP_LOGI(TAG, "SYNC TASK: Getting remotes");
-      get_paired_devices(GDO_PAIRED_DEVICE_TYPE_REMOTE);
-      continue;
-    }
-    else if (sync_stage < 4)
-    {
-      sync_stage = 4;
-      timeout += 1000;
-    }
-
-    if (g_status.paired_devices.total_keypads == GDO_PAIRED_DEVICE_COUNT_UNKNOWN)
-    {
-      ESP_LOGI(TAG, "SYNC TASK: Getting keypads");
-      get_paired_devices(GDO_PAIRED_DEVICE_TYPE_KEYPAD);
-      continue;
-    }
-    else if (sync_stage < 5)
-    {
-      sync_stage = 5;
-      timeout += 1000;
-    }
-
-    if (g_status.paired_devices.total_wall_controls == GDO_PAIRED_DEVICE_COUNT_UNKNOWN)
-    {
-      ESP_LOGI(TAG, "SYNC TASK: Getting wall controls");
-      get_paired_devices(GDO_PAIRED_DEVICE_TYPE_WALL_CONTROL);
-      continue;
-    }
-    else if (sync_stage < 6)
-    {
-      sync_stage = 6;
-      timeout += 1000;
-    }
-
-    if (g_status.paired_devices.total_accessories == GDO_PAIRED_DEVICE_COUNT_UNKNOWN)
-    {
-      ESP_LOGI(TAG, "SYNC TASK: Getting accessories");
-      get_paired_devices(GDO_PAIRED_DEVICE_TYPE_ACCESSORY);
-      continue;
-    }
-
-    queue_event((gdo_event_t){GDO_EVENT_PAIRED_DEVICES_UPDATE});
-    break;
-  }
 
 done:
-  g_status.synced = synced;
-  if (synced)
-  {
-    if (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1)
-    {
-      g_status.toggle_only = true;
+    g_status.synced = synced;
+
+    if (synced) {
+        if (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1) {
+            g_status.toggle_only = true;
+        }
+    } else if (!g_protocol_forced) {
+        g_status.protocol = 0;
     }
-  }
-  else if (!g_protocol_forced)
-  {
-    g_status.protocol = GDO_PROTOCOL_UNKNOWN;
-  }
-  // We use queue event rather than send event to ensure that the callback
-  // function is called from the main thread (same thread as all other callbacks).
-  queue_event((gdo_event_t){GDO_EVENT_SYNC_COMPLETE});
-  gdo_sync_task_handle = NULL;
-  vTaskDelete(NULL);
+
+    queue_event((gdo_event_t){GDO_EVENT_SYNC_COMPLETE});
+    gdo_sync_task_handle = NULL;
+    vTaskDelete(NULL);
 }
 
 /**
@@ -2492,8 +2441,10 @@ static void update_door_state(const gdo_door_state_t door_state)
     }
   }
 
+  // Notify sync task if door state changed from UNKNOWN during V1 detection
+  // This includes UNKNOWN protocol (auto-detect) and V1 protocols
   if (g_status.door == GDO_DOOR_STATE_UNKNOWN &&
-      g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1 &&
+      (g_status.protocol == GDO_PROTOCOL_UNKNOWN || (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1)) &&
       gdo_sync_task_handle)
   {
     xTaskNotifyGive(gdo_sync_task_handle);
@@ -2835,7 +2786,8 @@ inline static void update_openings(uint8_t flag, uint16_t count)
     if (g_status.openings != count)
     {
       g_status.openings = count;
-      send_event(GDO_CB_EVENT_OPENINGS);
+      // Sync Task may be calling this function, so we use queue_event to ensure callback is called from main thread
+      queue_event((gdo_event_t){GDO_EVENT_OPENINGS_UPDATE});
     }
   }
   // Ignoring openings, not from our request
@@ -2976,7 +2928,8 @@ inline static void update_paired_devices(gdo_paired_device_type_t type,
 
   if (g_status.synced && changed)
   {
-    send_event(GDO_CB_EVENT_PAIRED_DEVICES);
+    // Sync Task may be calling this function, so we use queue_event to ensure callback is called from main thread
+    queue_event((gdo_event_t){GDO_EVENT_PAIRED_DEVICES_UPDATE});
   }
 }
 
