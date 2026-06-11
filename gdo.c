@@ -322,6 +322,12 @@ esp_err_t gdo_init(const gdo_config_t *config)
       ESP_LOGE(TAG, "Failed to configure dry-contact GPIO output pins");
       return err;
     }
+    // Ensure TX pin (relay drive) starts LOW (MOSFET off) before any pulse.
+    gpio_set_level(g_config.uart_tx_pin, 0);
+    if (g_config.dc_discrete_open_pin)
+      gpio_set_level(g_config.dc_discrete_open_pin, 0);
+    if (g_config.dc_discrete_close_pin)
+      gpio_set_level(g_config.dc_discrete_close_pin, 0);
   }
   else
   {
@@ -521,7 +527,6 @@ esp_err_t gdo_start(gdo_event_callback_t event_callback, void *user_arg)
 
   if (g_status.protocol != GDO_PROTOCOL_DRY_CONTACT)
   {
-    // dry contact does not require serial comms
     err = uart_driver_install(g_config.uart_num, RX_BUFFER_SIZE, 0, 32,
                               &gdo_event_queue, 0);
     if (err != ESP_OK)
@@ -584,15 +589,21 @@ esp_err_t gdo_start(gdo_event_callback_t event_callback, void *user_arg)
     return ESP_ERR_NO_MEM;
   }
 
+  // Assign callback BEFORE gdo_sync() so the SYNCED event is not missed.
+  // For dry contact protocol, sync completes almost instantly and the
+  // GDO_EVENT_SYNC_COMPLETE can be dequeued by gdo_main_task before
+  // gdo_start() reaches the original callback assignment below.
+  g_event_callback = event_callback;
+
   err = gdo_sync();
   if (err != ESP_OK)
   {
+    g_event_callback = NULL;
     return err;
   }
 
   get_status();
 
-  g_event_callback = event_callback;
   ESP_LOGI(TAG, "GDO Started");
   return err;
 }
@@ -1678,7 +1689,8 @@ static esp_err_t gdo_dc_toggle_pin(gpio_num_t pin)
         .door_cmd = false,
         .nibble = 0,
     };
-    return schedule_command(&args, GDO_DRY_CONTACT_PULSE_WIDTH_MS * 1000);
+    uint32_t pulse_us = (g_config.dc_pulse_width_ms > 0 ? g_config.dc_pulse_width_ms : GDO_DRY_CONTACT_PULSE_WIDTH_MS) * 1000;
+    return schedule_command(&args, pulse_us);
   }
   return err;
 }
@@ -3130,7 +3142,7 @@ static void gdo_contact_task(void *arg)
       .mode = GPIO_MODE_INPUT,
       .pull_up_en = GPIO_PULLUP_ENABLE,
       .pull_down_en = GPIO_PULLDOWN_DISABLE,
-      .intr_type = GPIO_INTR_NEGEDGE,
+      .intr_type = GPIO_INTR_ANYEDGE,
   };
 
   err = gpio_config(&io_conf);
