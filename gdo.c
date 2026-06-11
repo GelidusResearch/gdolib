@@ -521,7 +521,6 @@ esp_err_t gdo_start(gdo_event_callback_t event_callback, void *user_arg)
 
   if (g_status.protocol != GDO_PROTOCOL_DRY_CONTACT)
   {
-    // dry contact does not require serial comms
     err = uart_driver_install(g_config.uart_num, RX_BUFFER_SIZE, 0, 32,
                               &gdo_event_queue, 0);
     if (err != ESP_OK)
@@ -1678,7 +1677,8 @@ static esp_err_t gdo_dc_toggle_pin(gpio_num_t pin)
         .door_cmd = false,
         .nibble = 0,
     };
-    return schedule_command(&args, GDO_DRY_CONTACT_PULSE_WIDTH_MS * 1000);
+    uint32_t pulse_us = (g_config.dc_pulse_width_ms > 0 ? g_config.dc_pulse_width_ms : GDO_DRY_CONTACT_PULSE_WIDTH_MS) * 1000;
+    return schedule_command(&args, pulse_us);
   }
   return err;
 }

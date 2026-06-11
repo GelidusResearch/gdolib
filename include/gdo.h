@@ -206,6 +206,7 @@ extern "C"
         gpio_num_t dc_discrete_open_pin;  // dry contact open door output pin
         gpio_num_t dc_discrete_close_pin; // dry contact close door output pin
         uint32_t dc_debounce_ms;          // dry contact debounce timer duration in milliseconds.
+        uint32_t dc_pulse_width_ms;       // dry contact trigger pulse width in milliseconds (0 = use default 250ms).
     } gdo_config_t;
 
 #define GDO_PAIRED_DEVICE_COUNT_UNKNOWN 0xff
