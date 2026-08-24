@@ -333,6 +333,10 @@ esp_err_t gdo_init(const gdo_config_t *config)
   {
     // dry contact does not require serial comms
     // Begin in secplus protocol v1 as its the easiest to detect.
+    // Reset pins to a known state before configuring the UART peripheral
+    gpio_reset_pin((gpio_num_t)g_config.uart_tx_pin);
+    gpio_reset_pin((gpio_num_t)g_config.uart_rx_pin);
+
     uart_config_t uart_config = {
         .baud_rate = 1200,
         .data_bits = UART_DATA_8_BITS,
@@ -535,6 +539,17 @@ esp_err_t gdo_start(gdo_event_callback_t event_callback, void *user_arg)
     }
 
     uart_flush(g_config.uart_num);
+
+    // Re-apply inversion after driver install, which may reset hardware state on some IDF variants
+    if (g_config.invert_uart)
+    {
+      err = uart_set_line_inverse(g_config.uart_num,
+                                  UART_SIGNAL_RXD_INV | UART_SIGNAL_TXD_INV);
+      if (err != ESP_OK)
+      {
+        return err;
+      }
+    }
   }
   else
   {
