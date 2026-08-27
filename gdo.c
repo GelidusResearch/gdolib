@@ -2877,7 +2877,7 @@ esp_err_t gdo_set_time_to_close(uint16_t time_to_close)
 esp_err_t gdo_cancel_ttc(void)
 {
   esp_err_t err = ESP_OK;
-  uint8_t byte1 = 0x05;
+  uint8_t byte1 = 0x00;
   uint8_t byte2 = 0x00;
   uint8_t nibble = 1;
   queue_command(GDO_CMD_CANCEL_TTC, nibble, byte1, byte2);
