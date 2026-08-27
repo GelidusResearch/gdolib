@@ -105,6 +105,8 @@ static gdo_status_t g_status = {
     .obst_test_pulse_timer_usecs = 50000,
     .vehicle_parked_threshold = 100,
     .vehicle_parked_threshold_variance = 5,
+    .fw_major = 0,
+    .fw_minor = 0,
 };
 
 static bool g_protocol_forced;
@@ -489,6 +491,8 @@ esp_err_t gdo_deinit(void)
   g_status.paired_devices.total_all = GDO_PAIRED_DEVICE_COUNT_UNKNOWN;
   g_status.openings = 0;
   g_status.ttc_seconds = 0;
+  g_status.fw_major = 0;
+  g_status.fw_minor = 0;
   g_status.open_ms = 0;
   g_status.close_ms = 0;
   g_status.door_position = -1;
@@ -640,6 +644,11 @@ esp_err_t gdo_get_status(gdo_status_t *status)
   *status = g_status;
   portEXIT_CRITICAL(&gdo_spinlock);
   return ESP_OK;
+}
+
+esp_err_t gdo_get_firmware(void)
+{
+  return queue_command(GDO_CMD_GET_FIRMWARE, 0, 0, 0);
 }
 
 /**
@@ -1979,6 +1988,13 @@ static void decode_packet(uint8_t *packet)
       update_obstruction_state((gdo_obstruction_state_t)((byte1 >> 6) & 1));
     }
   }
+  else if (cmd == GDO_CMD_FIRMWARE)
+  {
+    g_status.fw_major = byte1;
+    g_status.fw_minor = byte2;
+    ESP_LOGI(TAG, "GDO firmware: %u.%u", byte1, byte2);
+    send_event(GDO_CB_EVENT_FIRMWARE);
+  }
   else if (cmd == GDO_CMD_LIGHT)
   {
     handle_light_action((gdo_light_action_t)nibble);
@@ -2000,6 +2016,11 @@ static void decode_packet(uint8_t *packet)
     update_openings(nibble, ((byte1 << 8) | byte2));
   }
   else if (cmd == GDO_CMD_UPDATE_TTC)
+  {
+    update_ttc((byte1 << 8) | byte2);
+    send_event(GDO_CB_EVENT_UPDATE_TTC);
+  }
+  else if (cmd == GDO_CMD_PAIR_2_RESP && nibble == 0x1)
   {
     update_ttc((byte1 << 8) | byte2);
     send_event(GDO_CB_EVENT_UPDATE_TTC);

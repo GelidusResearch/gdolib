@@ -134,6 +134,10 @@ const char *cmd_to_string(gdo_command_t cmd)
 {
     switch (cmd)
     {
+    case GDO_CMD_GET_FIRMWARE:
+        return "GET_FIRMWARE";
+    case GDO_CMD_FIRMWARE:
+        return "FIRMWARE";
     case GDO_CMD_GET_STATUS:
         return "GET_STATUS";
     case GDO_CMD_STATUS:
@@ -144,6 +148,8 @@ const char *cmd_to_string(gdo_command_t cmd)
         return "OBST_2";
     case GDO_CMD_BATTERY_STATUS:
         return "BATTERY_STATUS";
+    case GDO_CMD_GET_BATTERY:
+        return "GET_BATTERY";
     case GDO_CMD_PAIR_3:
         return "PAIR_3";
     case GDO_CMD_PAIR_3_RESP:
@@ -180,6 +186,8 @@ const char *cmd_to_string(gdo_command_t cmd)
         return "UPDATE_TTC";
     case GDO_CMD_CANCEL_TTC:
         return "CANCEL_TTC";
+    case GDO_CMD_GET_TTC:
+        return "GET_TTC";
     case GDO_CMD_SET_TTC:
         return "SET_TTC";
     case GDO_CMD_GET_OPENINGS:

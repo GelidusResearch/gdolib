@@ -51,11 +51,13 @@ extern "C"
 
     typedef enum
     {
-        GDO_CMD_UNKNOWN = 0x000,
+        GDO_CMD_GET_FIRMWARE = 0x000,
+        GDO_CMD_FIRMWARE = 0x001,
         GDO_CMD_GET_STATUS = 0x080,
         GDO_CMD_STATUS = 0x081,
         GDO_CMD_OBST_1 = 0x084,
         GDO_CMD_OBST_2 = 0x085,
+        GDO_CMD_GET_BATTERY = 0x09c,
         GDO_CMD_BATTERY_STATUS = 0x09d,
         GDO_CMD_PAIR_3 = 0x0a0,
         GDO_CMD_PAIR_3_RESP = 0x0a1,
@@ -75,6 +77,7 @@ extern "C"
         GDO_CMD_PAIR_2_RESP = 0x401,
         GDO_CMD_SET_TTC = 0x402,
         GDO_CMD_CANCEL_TTC = 0x408,
+        GDO_CMD_GET_TTC = 0x409,
         GDO_CMD_UPDATE_TTC = 0x40a,
         GDO_CMD_GET_OPENINGS = 0x48b,
         GDO_CMD_OPENINGS = 0x48c,
