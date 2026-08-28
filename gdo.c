@@ -91,6 +91,7 @@ static gdo_status_t g_status = {
     .synced = false,
     .openings = 0,
     .ttc_seconds = 0,
+    .ttc_state = GDO_TTC_STATE_NORMAL,
     .open_ms = 0,
     .close_ms = 0,
     .door_position = -1,
@@ -491,6 +492,7 @@ esp_err_t gdo_deinit(void)
   g_status.paired_devices.total_all = GDO_PAIRED_DEVICE_COUNT_UNKNOWN;
   g_status.openings = 0;
   g_status.ttc_seconds = 0;
+  g_status.ttc_state = GDO_TTC_STATE_NORMAL;
   g_status.fw_major = 0;
   g_status.fw_minor = 0;
   g_status.open_ms = 0;
@@ -2033,6 +2035,19 @@ static void decode_packet(uint8_t *packet)
   {
     send_event(GDO_CB_EVENT_CANCEL_TTC);
   }
+  else if (cmd == GDO_CMD_PAIR_3_RESP)
+  {
+    if (byte1 == 0x0A)
+    {
+      g_status.ttc_state = GDO_TTC_STATE_HOLD;
+      send_event(GDO_CB_EVENT_TTC_HOLD);
+    }
+    else if (byte1 == 0x0C)
+    {
+      g_status.ttc_state = GDO_TTC_STATE_NORMAL;
+      send_event(GDO_CB_EVENT_TTC_RELEASED);
+    }
+  }
   else if (cmd == GDO_CMD_PAIRED_DEVICES)
   {
     update_paired_devices(nibble, byte2);
@@ -2877,7 +2892,18 @@ esp_err_t gdo_set_time_to_close(uint16_t time_to_close)
 esp_err_t gdo_cancel_ttc(void)
 {
   esp_err_t err = ESP_OK;
-  uint8_t byte1 = 0x00;
+  uint8_t byte1 = 0x05;
+  uint8_t byte2 = 0x00;
+  uint8_t nibble = 1;
+  queue_command(GDO_CMD_CANCEL_TTC, nibble, byte1, byte2);
+  queue_event((gdo_event_t){GDO_EVENT_CANCEL_TTC});
+  return err;
+}
+
+esp_err_t gdo_toggle_ttc(void)
+{
+  esp_err_t err = ESP_OK;
+  uint8_t byte1 = 0x04;
   uint8_t byte2 = 0x00;
   uint8_t nibble = 1;
   queue_command(GDO_CMD_CANCEL_TTC, nibble, byte1, byte2);

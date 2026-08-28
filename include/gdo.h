@@ -97,6 +97,13 @@ extern "C"
 
     typedef enum
     {
+        GDO_TTC_STATE_NORMAL = 0,
+        GDO_TTC_STATE_HOLD,
+        GDO_TTC_STATE_MAX,
+    } gdo_ttc_state_t;
+
+    typedef enum
+    {
         GDO_PAIRED_DEVICE_TYPE_ALL = 0,
         GDO_PAIRED_DEVICE_TYPE_REMOTE,
         GDO_PAIRED_DEVICE_TYPE_KEYPAD,
@@ -130,6 +137,8 @@ extern "C"
         GDO_CB_EVENT_MOTION,
         GDO_CB_EVENT_SET_TTC,
         GDO_CB_EVENT_CANCEL_TTC,
+        GDO_CB_EVENT_TTC_HOLD,
+        GDO_CB_EVENT_TTC_RELEASED,
         GDO_CB_EVENT_UPDATE_TTC,
         GDO_CB_EVENT_PAIRED_DEVICES,
         GDO_CB_EVENT_OPEN_DURATION_MEASUREMENT,
@@ -168,6 +177,7 @@ extern "C"
         gdo_button_state_t button;            // Button state
         gdo_battery_state_t battery;          // Battery state
         gdo_learn_state_t learn;              // Learn state
+        gdo_ttc_state_t ttc_state;            // TTC hold/normal state
         gdo_paired_device_t paired_devices;   // Paired devices
         gdo_door_state_t last_move_direction; // Last move direction
         bool synced;                          // Synced state
@@ -475,6 +485,12 @@ extern "C"
      * @return ESP_OK on success.
      */
     esp_err_t gdo_cancel_ttc(void);
+
+    /**
+     * @brief Toggle the time-to-close feature (Hold/Release TTC from wall panel).
+     * @return ESP_OK on success.
+     */
+    esp_err_t gdo_toggle_ttc(void);
 
     /**
      * @brief Sets the time the door takes to open from fully closed in milliseconds.
