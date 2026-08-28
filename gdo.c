@@ -2147,9 +2147,15 @@ static void gdo_main_task(void *arg)
 
           if (rx_packet_size > GDO_PACKET_SIZE)
           {
-            ESP_LOGW(TAG, "Oversized packet received: %u bytes, messages pending: %u", rx_packet_size, rx_pending);
-            // Sometimes the break is interperated as a 0 byte and added to the packet
-            // So lets just dump the first byte(s) until we have our packet size.
+            // V2 clients prepend a mark-space byte; rx_packet_size == GDO_PACKET_SIZE+1 is normal
+            if (rx_packet_size == GDO_PACKET_SIZE + 1)
+            {
+              ESP_LOGV(TAG, "Mark-space byte prepended by remote client, stripping");
+            }
+            else
+            {
+              ESP_LOGW(TAG, "Oversized packet received: %u bytes, messages pending: %u", rx_packet_size, rx_pending);
+            }
             while (rx_packet_size > GDO_PACKET_SIZE)
             {
               if (uart_read_bytes(g_config.uart_num, rx_buffer, 1, 0) < 0)
