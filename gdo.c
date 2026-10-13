@@ -199,12 +199,15 @@ esp_err_t gdo_init(const gdo_config_t *config)
 
   if (!g_config.obst_from_status && g_config.obst_in_pin > 0)
   {
+    // obst_invert flips the idle/pull direction and the edge we interrupt on so an
+    // inverted obstruction sensor (idle low, pulses high) is treated the same as the
+    // default (idle high, pulses low).
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << g_config.obst_in_pin),
         .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_NEGEDGE,
+        .pull_up_en = g_config.obst_invert ? GPIO_PULLUP_DISABLE : GPIO_PULLUP_ENABLE,
+        .pull_down_en = g_config.obst_invert ? GPIO_PULLDOWN_ENABLE : GPIO_PULLDOWN_DISABLE,
+        .intr_type = g_config.obst_invert ? GPIO_INTR_POSEDGE : GPIO_INTR_NEGEDGE,
     };
 
     // Initialize the global obstruction stats
@@ -1457,6 +1460,9 @@ static void obst_timer_cb(void *arg)
   gdo_obstruction_state_t obs_state = GDO_OBSTRUCTION_STATE_MAX;
   int count_snapshot;
   int64_t last_pulse_snapshot;
+  // Normalize the raw pin level so the rest of this function can keep treating
+  // "low" as the idle/asleep level regardless of obst_invert.
+  bool pin_low = gpio_get_level(g_config.obst_in_pin) ? g_config.obst_invert : !g_config.obst_invert;
 
   // Take snapshot of shared data under critical section
   portENTER_CRITICAL(&stats->mux);
@@ -1465,19 +1471,23 @@ static void obst_timer_cb(void *arg)
   stats->count = 0;  // Reset count for next period
   portEXIT_CRITICAL(&stats->mux);
 
-  ESP_LOGD(TAG, "obst_timer: count=%d last_pulse=%lld now=%lld pin=%d",
-           count_snapshot, last_pulse_snapshot, micros_now, gpio_get_level(g_config.obst_in_pin));
+  ESP_LOGD(TAG, "obst_timer: count=%d last_pulse=%lld now=%lld pin_low=%d",
+           count_snapshot, last_pulse_snapshot, micros_now, pin_low);
 
   if (count_snapshot > 3)
   {
+    // Track "now" (not 0) as the debounce baseline so a single noisy tick with
+    // zero counted pulses right after a clear period can't be misread as having
+    // been silent since boot, which would instantly exceed the 700ms obstructed
+    // threshold below and cause a spurious obstructed->clear blip.
     portENTER_CRITICAL(&stats->mux);
-    stats->last_pulse_micros = 0;
+    stats->last_pulse_micros = micros_now;
     portEXIT_CRITICAL(&stats->mux);
     obs_state = GDO_OBSTRUCTION_STATE_CLEAR;
   }
   else if (count_snapshot == 0)
   {
-    if (!gpio_get_level(g_config.obst_in_pin))
+    if (pin_low)
     {
       portENTER_CRITICAL(&stats->mux);
       stats->last_pulse_micros = micros_now;
