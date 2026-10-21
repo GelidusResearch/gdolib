@@ -651,6 +651,7 @@ extern "C"
 
     /**
      * @brief Sets the time the door takes to open from fully closed in milliseconds.
+     * If set to zero then recalibration will be triggered.
      * @param ms The time the door takes to open from fully closed in milliseconds.
      * @return ESP_OK on success, ESP_ERR_INVALID_ARG if the ms is invalid.
      */
@@ -658,6 +659,7 @@ extern "C"
 
     /**
      * @brief Sets the time the door takes to close from fully open in milliseconds.
+     * If set to zero then recalibration will be triggered.
      * @param ms The time the door takes to close from fully open in milliseconds.
      * @return ESP_OK on success, ESP_ERR_INVALID_ARG if the ms is invalid.
      */

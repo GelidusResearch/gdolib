@@ -53,6 +53,15 @@ extern "C"
 #define GDO_MOTION_TIMEOUT_MS 3000
 #endif
 
+// For calculating door operation duration medians
+#ifndef GDO_MAX_DURATION_MS
+#define GDO_MAX_DURATION_MS (65 * 1000) // Maximum time it should take to open/close a door
+#endif
+#ifndef GDO_MIN_DURATION_MS
+#define GDO_MIN_DURATION_MS (3 * 1000)  // Minimum time it should take to open/close a door
+#endif
+#define GDO_MAX_HISTORY 6               // Number of door operations to calculate median across
+
     typedef enum
     {
         GDO_CMD_GET_FIRMWARE = 0x000,
