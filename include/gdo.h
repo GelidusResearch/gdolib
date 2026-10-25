@@ -509,16 +509,43 @@ extern "C"
     esp_err_t gdo_get_ttc_state(void);
 
     /**
-     * @brief Toggle the time-to-close feature (Hold/Release TTC from wall panel).
+     * @brief Set motion-sensor auto-light control mode.
+     * @param enabled true to enable auto-light mode, false to disable.
      * @return ESP_OK on success.
      */
-    esp_err_t gdo_hold_ttc(void);
+    esp_err_t gdo_set_auto_light_mode(bool enabled);
 
     /**
-     * @brief Toggle the time-to-close feature (Hold/Release TTC from wall panel).
+     * @brief Sets the light timer duration in seconds.
+     * @param seconds The light timer duration in seconds.
      * @return ESP_OK on success.
      */
-    esp_err_t gdo_release_ttc(void);
+    esp_err_t gdo_set_light_timer(uint16_t seconds);
+
+    /**
+     * @brief Encodes and queues a raw Security+ V2 command.
+     * @param command The command ID.
+     * @param nibble The command nibble, from 0x0 to 0xf.
+     * @param byte1 The first command byte.
+     * @param byte2 The second command byte.
+     * @return ESP_OK on success, ESP_ERR_INVALID_ARG for invalid input,
+     * ESP_ERR_INVALID_STATE if the driver is not initialized, ESP_ERR_NO_MEM
+     * if the transmit queue is full, or ESP_FAIL if encoding fails.
+     */
+    esp_err_t gdo_send_command(uint16_t command, uint8_t nibble,
+                               uint8_t byte1, uint8_t byte2);
+
+   /**
+     * @brief Enable the time-to-close feature.
+     * @return ESP_OK on success.
+     */
+    esp_err_t gdo_enable_ttc(void);
+
+    /**
+     * @brief Requests the configured TTC duration and current hold/release state.
+     * @return ESP_OK on success.
+     */
+    esp_err_t gdo_get_ttc_state(void);
 
     /**
      * @brief Set motion-sensor auto-light control mode.
@@ -564,63 +591,6 @@ extern "C"
      * @return ESP_OK on success.
      */
     esp_err_t gdo_hold_ttc(void);
-
-    /**
-     * @brief Toggle the time-to-close feature (Hold/Release TTC from wall panel).
-     * @return ESP_OK on success.
-     */
-    esp_err_t gdo_release_ttc(void);
-
-    /**
-     * @brief Set motion-sensor auto-light control mode.
-     * @param enabled true to enable auto-light mode, false to disable.
-     * @return ESP_OK on success.
-     */
-    esp_err_t gdo_set_auto_light_mode(bool enabled);
-
-    /**
-     * @brief Sets the light timer duration in seconds.
-     * @param seconds The light timer duration in seconds.
-     * @return ESP_OK on success.
-     */
-    esp_err_t gdo_set_light_timer(uint16_t seconds);
-
-    /**
-     * @brief Encodes and queues a raw Security+ V2 command.
-     * @param command The command ID.
-     * @param nibble The command nibble, from 0x0 to 0xf.
-     * @param byte1 The first command byte.
-     * @param byte2 The second command byte.
-     * @return ESP_OK on success, ESP_ERR_INVALID_ARG for invalid input,
-     * ESP_ERR_INVALID_STATE if the driver is not initialized, ESP_ERR_NO_MEM
-     * if the transmit queue is full, or ESP_FAIL if encoding fails.
-     */
-    esp_err_t gdo_send_command(uint16_t command, uint8_t nibble,
-                               uint8_t byte1, uint8_t byte2);
-
-   /**
-     * @brief Enable the time-to-close feature.
-     * @return ESP_OK on success.
-     */
-    esp_err_t gdo_enable_ttc(void);
-
-    /**
-     * @brief Requests the configured TTC duration and current hold/release state.
-     * @return ESP_OK on success.
-     */
-    esp_err_t gdo_get_ttc_state(void);
-
-    /**
-     * @brief Toggle the time-to-close feature (Hold/Release TTC from wall panel).
-     * @return ESP_OK on success.
-     */
-    esp_err_t gdo_hold_ttc(void);
-
-    /**
-     * @brief Toggle the time-to-close feature (Hold/Release TTC from wall panel).
-     * @return ESP_OK on success.
-     */
-    esp_err_t gdo_release_ttc(void);
 
     /**
      * @brief Set motion-sensor auto-light control mode.

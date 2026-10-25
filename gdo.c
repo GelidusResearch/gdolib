@@ -2123,10 +2123,10 @@ static void decode_packet(uint8_t *packet)
         new_state = GDO_TTC_STATE_REL;
         event = GDO_CB_EVENT_REL_TTC;
         break;
-      case 0x0E:
+      case 0x0D:
         new_state = GDO_TTC_STATE_ERROR;
         event = GDO_CB_EVENT_TTC;
-        ESP_LOGW(TAG, "TTC Error state detected - device may require manual recovery");
+        ESP_LOGW(TAG, "TTC Error state detected - door could not close");
         break;
       default:
         ESP_LOGD(TAG, "Unknown PAIR_3_RESP state: 0x%02x", byte1);
