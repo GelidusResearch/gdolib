@@ -15,6 +15,7 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+#define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE
 
 #include "gdo.h"
 #include "gdo_priv.h"
