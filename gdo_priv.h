@@ -19,6 +19,10 @@
 #ifndef GDO_PRIV_H
 #define GDO_PRIV_H
 
+#ifndef MIN
+#define MIN(a,b) ((a)<(b)?(a):(b))
+#endif
+
 #ifdef __cplusplus
 extern "C"
 {
@@ -193,6 +197,7 @@ extern "C"
     {
         int64_t sleep_micros;
         uint32_t count;
+        uint32_t pulses;
         uint64_t last_pulse_micros;
         portMUX_TYPE mux;
     } gdo_obstruction_stats_t;
