@@ -574,12 +574,6 @@ extern "C"
     esp_err_t gdo_send_command(uint16_t command, uint8_t nibble,
                                uint8_t byte1, uint8_t byte2);
 
-   /**
-     * @brief Enable the time-to-close feature.
-     * @return ESP_OK on success.
-     */
-    esp_err_t gdo_enable_ttc(void);
-
     /**
      * @brief Requests the configured TTC duration and current hold/release state.
      * @return ESP_OK on success.
@@ -590,7 +584,7 @@ extern "C"
      * @brief Toggle the time-to-close feature (Hold/Release TTC from wall panel).
      * @return ESP_OK on success.
      */
-    esp_err_t gdo_hold_ttc(void);
+    esp_err_t gdo_toggle_ttc(bool enable);
 
     /**
      * @brief Set motion-sensor auto-light control mode.
