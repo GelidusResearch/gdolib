@@ -135,14 +135,13 @@ static uint32_t g_tx_delay_ms = GDO_MIN_COMMAND_INTERVAL_MS;
 
 static gdo_obstruction_stats_t obst_stats = {
     .count = 0,
+    .pulses = 0,
     .last_pulse_micros = 0,
 };
 
 const static uint32_t OBST_CHECK_PERIOD = 250; // Milliseconds between checks for obstruction
 //const static uint32_t OBST_LOWER_LIMIT = 1;    // Number of pulses to consider clear state
 
-// Variables to track obstruction pulse statistics
-static volatile uint32_t obst_pulses = 0;
 
 /******************************* PUBLIC API FUNCTIONS **********************************/
 
@@ -587,7 +586,7 @@ esp_err_t gdo_start(gdo_event_callback_t event_callback, void *user_arg)
 #if defined(CONFIG_FREERTOS_UNICORE) || defined(NO_CORE_PINNING)
     if (xTaskCreate(gdo_contact_task, "gdo_open_ISR", GDO_TASK_STACK_SIZE, &info, GDO_TASK_PRIORITY_HIGH, &gdo_contact_task_handle[GDO_CONTACT_DOOR_OPEN - 1]) != pdPASS)
 #else
-    if (xTaskCreatePinnedToCore(gdo_contact_task, "gdo_open_ISR", GDO_TASK_STACK_SIZE, &info, GDO_TASK_PRIORITY_HIGH, &gdo_contact_task_handle[GDO_CONTACT_DOOR_OPEN - 1], 1) != pdPASS)
+    if (xTaskCreatePinnedToCore(gdo_contact_task, "gdo_open_ISR", GDO_TASK_STACK_SIZE, &info, GDO_TASK_PRIORITY_HIGH, &gdo_contact_task_handle[GDO_CONTACT_DOOR_OPEN - 1], 0) != pdPASS)
 #endif
     {
       return ESP_ERR_NO_MEM;
@@ -604,7 +603,7 @@ esp_err_t gdo_start(gdo_event_callback_t event_callback, void *user_arg)
 #if defined(CONFIG_FREERTOS_UNICORE) || defined(NO_CORE_PINNING)
     if (xTaskCreate(gdo_contact_task, "gdo_close_ISR", GDO_TASK_STACK_SIZE, &info, GDO_TASK_PRIORITY_HIGH, &gdo_contact_task_handle[GDO_CONTACT_DOOR_CLOSE - 1]) != pdPASS)
 #else
-    if (xTaskCreatePinnedToCore(gdo_contact_task, "gdo_close_ISR", GDO_TASK_STACK_SIZE, &info, GDO_TASK_PRIORITY_HIGH, &gdo_contact_task_handle[GDO_CONTACT_DOOR_CLOSE - 1], 1) != pdPASS)
+    if (xTaskCreatePinnedToCore(gdo_contact_task, "gdo_close_ISR", GDO_TASK_STACK_SIZE, &info, GDO_TASK_PRIORITY_HIGH, &gdo_contact_task_handle[GDO_CONTACT_DOOR_CLOSE - 1], 0) != pdPASS)
 #endif
     {
       return ESP_ERR_NO_MEM;
@@ -700,13 +699,13 @@ esp_err_t gdo_get_obstruction_pulse_stats(gdo_obstruction_pulse_stats_t *stats, 
   uint64_t current_time = esp_timer_get_time();
 
   portENTER_CRITICAL(&obst_stats.mux);
-  stats->pulses = obst_pulses;
+  stats->pulses = obst_stats.pulses;
   stats->current_pulse_count = obst_stats.count;
   stats->last_pulse_time_us = obst_stats.last_pulse_micros;
 
   // Clear counters if requested
   if (clear_counters) {
-    obst_pulses = 0;
+    obst_stats.pulses = 0;
     obst_stats.count = 0;
     obst_stats.last_pulse_micros = 0;
   }
@@ -747,7 +746,7 @@ esp_err_t gdo_sync(void)
 #if defined(CONFIG_FREERTOS_UNICORE) || defined(NO_CORE_PINNING)
     if (xTaskCreate(gdo_sync_task, "gdo_sync_task", GDO_TASK_STACK_SIZE, NULL, GDO_TASK_PRIORITY_MEDIUM, &gdo_sync_task_handle) != pdPASS)
 #else
-    if (xTaskCreatePinnedToCore(gdo_sync_task, "gdo_sync_task", GDO_TASK_STACK_SIZE, NULL, GDO_TASK_PRIORITY_MEDIUM, &gdo_sync_task_handle, 1) != pdPASS)
+    if (xTaskCreatePinnedToCore(gdo_sync_task, "gdo_sync_task", GDO_TASK_STACK_SIZE, NULL, GDO_TASK_PRIORITY_MEDIUM, &gdo_sync_task_handle, 0) != pdPASS)
 #endif
     {
       return ESP_ERR_NO_MEM;
@@ -1447,6 +1446,7 @@ static void IRAM_ATTR obst_isr_handler(void *arg)
 
   portENTER_CRITICAL_ISR(&stats->mux);
   ++stats->count;
+  ++stats->pulses;
   portEXIT_CRITICAL_ISR(&stats->mux);
 }
 
