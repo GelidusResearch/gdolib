@@ -1494,9 +1494,6 @@ static void obst_timer_cb(void *arg)
   stats->count = 0;  // Reset count for next period
   portEXIT_CRITICAL(&stats->mux);
 
-  ESP_LOGV(TAG, "obst_timer: count=%d last_pulse=%lld now=%lld pin_low=%d",
-           count_snapshot, last_pulse_snapshot, micros_now, pin_low);
-
   if (count_snapshot > 3)
   {
     // Track "now" (not 0) as the debounce baseline so a single noisy tick with
@@ -1522,8 +1519,6 @@ static void obst_timer_cb(void *arg)
       obs_state = GDO_OBSTRUCTION_STATE_OBSTRUCTED;
     }
   }
-
-  ESP_LOGV(TAG, "obst_timer: obs_state=%d current_status=%d", obs_state, g_status.obstruction);
 
   if (obs_state != GDO_OBSTRUCTION_STATE_MAX && obs_state != g_status.obstruction)
   {
