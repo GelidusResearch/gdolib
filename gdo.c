@@ -2654,10 +2654,29 @@ static void update_door_state(const gdo_door_state_t door_state)
 
     if (door_state == GDO_DOOR_STATE_STOPPED)
     {
-      int delta = g_status.door_position - g_status.door_target;
-      if (delta < -5000 || delta > 5000)
+      // V1 doors with dry-contact sensors are susceptible to wire noise causing brief
+      // spurious stopped signals. Debounce required.
+      if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1 ||
+          g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL)
       {
-        ESP_LOGE(TAG, "Door failed to reach target");
+        uint32_t time_moving_ms = (uint32_t)(esp_timer_get_time() / 1000) - g_door_start_moving_ms;
+        if (time_moving_ms > 500)
+        {
+          int delta = g_status.door_position - g_status.door_target;
+          if (delta < -5000 || delta > 5000)
+          {
+            ESP_LOGE(TAG, "Door failed to reach target.");
+          }
+        }
+      }
+      else
+      {
+        // V2 doors don't need debouncing
+        int delta = g_status.door_position - g_status.door_target;
+        if (delta < -5000 || delta > 5000)
+        {
+          ESP_LOGE(TAG, "Door failed to reach target.");
+        }
       }
     }
     else if (door_state == GDO_DOOR_STATE_OPEN)
