@@ -692,7 +692,7 @@ esp_err_t gdo_get_ttc_state(void)
     return err;
   }
 
-  return queue_command(GDO_CMD_GET_TTC, 0, 0xA0, 0);
+  return queue_command(GDO_CMD_GET_TTC, 0, 0, 0);
 }
 
 /**
