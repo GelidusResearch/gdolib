@@ -2099,7 +2099,7 @@ static void decode_packet(uint8_t *packet)
       if (g_status.light_timer_seconds != value)
       {
         g_status.light_timer_seconds = value;
-        send_event(GDO_CB_EVENT_UPDATE_TTC);
+        //send_event(GDO_CB_EVENT_UPDATE_TTC);
       }
     }
   }
@@ -2112,6 +2112,10 @@ static void decode_packet(uint8_t *packet)
   else if (cmd == GDO_CMD_CANCEL_TTC)
   {
     send_event(GDO_CB_EVENT_CANCEL_TTC);
+  }
+  else if (cmd == GDO_CMD_PAIR_3)
+  {
+    send_event(GDO_CB_EVENT_PAIR_3);
   }
   else if (cmd == GDO_CMD_PAIR_3_RESP)
   {
@@ -2312,46 +2316,39 @@ static void gdo_main_task(void *arg)
 
           rx_buf_index += bytes_read;
 
-          if (rx_buf_index >= GDO_PACKET_SIZE)
+          // Parse as a stream: toggle commands are single byte, other commands are followed by a response byte.
+          uint16_t i = 0;
+          while (i < rx_buf_index)
           {
-            // Filter out invalid bytes before processing to prevent mark/space bytes from being processed
-            uint8_t filtered_buffer[RX_BUFFER_SIZE * 2];
-            uint8_t filtered_index = 0;
-
-            for (uint8_t i = 0; i < rx_buf_index; i++)
+            uint8_t pkt[2] = {rx_buffer[i], 0};
+            if (!GDO_V1_CMD_IS_VALID(pkt[0]))
             {
-              if (GDO_V1_CMD_IS_VALID(rx_buffer[i]) || (i > 0 && GDO_V1_CMD_IS_VALID(rx_buffer[i - 1])))
+              // Mark/space or noise byte
+              ESP_LOGD(TAG, "Filtering out invalid/noise byte: 0x%02x", pkt[0]);
+              i++;
+              continue;
+            }
+
+            if (pkt[0] > V1_CMD_TOGGLE_MAX)
+            {
+              if (i + 1 >= rx_buf_index)
               {
-                // Keep valid commands and their response bytes
-                filtered_buffer[filtered_index++] = rx_buffer[i];
+                // Incomplete packet, wait for the response byte
+                break;
               }
-              else
-              {
-                ESP_LOGD(TAG, "Filtering out invalid/noise byte: 0x%02x", rx_buffer[i]);
-              }
+              pkt[1] = rx_buffer[++i];
             }
 
-            // Process filtered buffer in pairs
-            uint8_t pkt[2];
-            for (uint8_t i = 0; i < filtered_index - 1; i += 2)
-            {
-              pkt[0] = filtered_buffer[i];
-              pkt[1] = filtered_buffer[i + 1];
-              print_buffer(g_status.protocol, pkt, false);
-              decode_v1_packet(pkt);
-            }
-
-            // Handle any remaining byte
-            if (filtered_index % 2 != 0)
-            {
-              rx_buffer[0] = filtered_buffer[filtered_index - 1];
-              rx_buf_index = 1;
-            }
-            else
-            {
-              rx_buf_index = 0;
-            }
+            i++;
+            print_buffer(g_status.protocol, pkt, false);
+            decode_v1_packet(pkt);
           }
+
+          if (i < rx_buf_index)
+          {
+            memmove(rx_buffer, &rx_buffer[i], rx_buf_index - i);
+          }
+          rx_buf_index -= i;
         }
 
         break;
@@ -2500,6 +2497,9 @@ static void gdo_main_task(void *arg)
         break;
       case GDO_EVENT_PAIRED_DEVICES_UPDATE:
         cb_event = GDO_CB_EVENT_PAIRED_DEVICES;
+        break;
+      case GDO_EVENT_PAIR_3:
+        cb_event = GDO_CB_EVENT_PAIR_3;
         break;
       case GDO_EVENT_DOOR_OPEN_DURATION_MEASUREMENT:
         cb_event = GDO_CB_EVENT_OPEN_DURATION_MEASUREMENT;
