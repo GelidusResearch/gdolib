@@ -504,10 +504,17 @@ extern "C"
     esp_err_t gdo_enable_ttc(void);
 
     /**
-     * @brief Requests the configured TTC duration and current hold/release state.
+     * @brief Requests the configured current hold/release state and will trigger CMD_CANCEL_TTC with the appropriate response.
      * @return ESP_OK on success.
      */
     esp_err_t gdo_get_ttc_state(void);
+
+    /**
+     * @brief Sets the TTC state in the local status.
+     * @param state The new TTC state to set.
+     * @return ESP_OK on success.
+     */
+    esp_err_t gdo_set_ttc_state(gdo_ttc_state_t state);
 
     /**
      * @brief Set motion-sensor auto-light control mode.

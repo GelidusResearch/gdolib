@@ -2087,9 +2087,9 @@ static void decode_packet(uint8_t *packet)
     if (nibble == 0x1)
     {
       // TTC (Time-To-Close) configuration
-      if (g_status.ttc_seconds != value)
+      if (g_status.ttc_countdown != value)
       {
-        g_status.ttc_seconds = value;
+        g_status.ttc_countdown = value;
         send_event(GDO_CB_EVENT_UPDATE_TTC);
       }
     }
@@ -2099,7 +2099,7 @@ static void decode_packet(uint8_t *packet)
       if (g_status.light_timer_seconds != value)
       {
         g_status.light_timer_seconds = value;
-        //send_event(GDO_CB_EVENT_UPDATE_TTC);
+        //send_event(GDO_CB_EVENT_SET_LIGHT_TIMER);
       }
     }
   }
@@ -2124,6 +2124,10 @@ static void decode_packet(uint8_t *packet)
 
     switch (byte1)
     {
+      case 0x02:
+        new_state = GDO_TTC_STATE_ERROR;
+        event = GDO_CB_EVENT_TTC;
+        break;
       case 0x09:
         new_state = GDO_TTC_STATE_OFF;
         event = GDO_CB_EVENT_CANCEL_TTC;
@@ -3115,7 +3119,7 @@ esp_err_t gdo_set_time_to_close(uint16_t time_to_close)
 }
 
 /**
- * @brief Cancel or toggle the time to close feature (Hold/Release TTC from wall panel)
+ * @brief Cancel the time to close feature on security+ v2.0 devices.
  * @return ESP_OK on success
  */
 esp_err_t gdo_cancel_ttc(void)
@@ -3133,6 +3137,11 @@ esp_err_t gdo_cancel_ttc(void)
   return err;
 }
 
+/**
+ * @brief Toggle the time-to-close hold/release feature. This uses the CANCEL_TTC command to achieve the toggle.
+ * This command was originally intended for canceling the TTC, but it can also be used to toggle the hold/release state.
+ * @return ESP_OK on success.
+ */
 esp_err_t gdo_enable_ttc(void)
 {
   uint8_t byte1 = 0x04;
@@ -3148,6 +3157,10 @@ esp_err_t gdo_enable_ttc(void)
   return err;
 }
 
+/**
+ * @brief Enable the time-to-close feature.
+ * @return ESP_OK on success.
+ */
 esp_err_t gdo_set_auto_light_mode(bool enabled)
 {
   uint8_t nibble = enabled ? 0x1 : 0x0;
@@ -3163,7 +3176,11 @@ esp_err_t gdo_set_auto_light_mode(bool enabled)
   send_event(GDO_CB_EVENT_AUTO_LIGHT_MODE);
   return err;
 }
-
+/**
+ * @brief Set the light timer duration in seconds.
+ * @param seconds The light timer duration in seconds.
+ * @return ESP_OK on success.
+ */
 esp_err_t gdo_set_light_timer(uint16_t seconds)
 {
   uint8_t byte1 = (seconds >> 8) & 0xFF;
@@ -3179,6 +3196,18 @@ esp_err_t gdo_set_light_timer(uint16_t seconds)
   send_event(GDO_CB_EVENT_UPDATE_TTC);
   return err;
 }
+
+/**
+ * @brief Set the TTC state.
+ * @param state The TTC state to set.
+ * @return ESP_OK on success.
+ */
+esp_err_t gdo_set_ttc_state(gdo_ttc_state_t state)
+{
+  g_status.ttc_state = state;
+  return ESP_OK;
+}
+
 
 esp_err_t gdo_send_command(uint16_t command, uint8_t nibble,
                            uint8_t byte1, uint8_t byte2)
