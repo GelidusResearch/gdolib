@@ -15,6 +15,7 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+#define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE
 #define __STDC_FORMAT_MACROS 1
 
 #include "gdo_priv.h"
@@ -91,6 +92,9 @@ static gdo_status_t g_status = {
     .synced = false,
     .openings = 0,
     .ttc_seconds = 0,
+    .ttc_countdown = 0,
+    .ttc_state = GDO_TTC_STATE_OFF,
+    .light_timer_seconds = 0,
     .open_ms = 0,
     .close_ms = 0,
     .door_position = -1,
@@ -98,14 +102,18 @@ static gdo_status_t g_status = {
     .client_id = 0,
     .toggle_only = false,
     .obst_override = false,
+    .obst_from_status = false,
     .last_move_direction = GDO_DOOR_STATE_UNKNOWN,
     .tof_timer_active = false,
     .tof_timer_usecs = 250000,
     .obst_test_pulse_timer_active = false,
     .obst_test_pulse_timer_usecs = 50000,
+    .auto_light_enabled = false,
     .vehicle_parked_threshold = 100,
     .vehicle_parked_threshold_variance = 5,
     .motion_timeout_ms = GDO_MOTION_TIMEOUT_MS,
+    .fw_major = 0,
+    .fw_minor = 0,
 };
 
 static bool g_protocol_forced;
@@ -125,18 +133,28 @@ static esp_timer_handle_t v1_status_timer;
 static void *g_user_cb_arg;
 static uint32_t g_tx_delay_ms = GDO_MIN_COMMAND_INTERVAL_MS;
 //static uint32_t g_ttc_delay_s = 0;
-static portMUX_TYPE gdo_spinlock = portMUX_INITIALIZER_UNLOCKED;
 
 static gdo_obstruction_stats_t obst_stats = {
     .count = 0,
+    .pulses = 0,
     .last_pulse_micros = 0,
 };
 
 const static uint32_t OBST_CHECK_PERIOD = 250; // Milliseconds between checks for obstruction
 //const static uint32_t OBST_LOWER_LIMIT = 1;    // Number of pulses to consider clear state
 
-// Variables to track obstruction pulse statistics
-static volatile uint32_t obst_pulses = 0;
+
+typedef struct
+{
+  uint32_t max;
+  uint32_t count;
+  uint32_t duration[GDO_MAX_HISTORY];
+} DoorHistory;
+static DoorHistory openHistory = {GDO_MAX_HISTORY, 0, {0}};
+static DoorHistory closeHistory = {GDO_MAX_HISTORY, 0, {0}};
+#define OPEN_HISTORY(n) (openHistory.duration[(openHistory.count + GDO_MAX_HISTORY - (n)) % GDO_MAX_HISTORY])
+#define CLOSE_HISTORY(n) (closeHistory.duration[(closeHistory.count + GDO_MAX_HISTORY - (n)) % GDO_MAX_HISTORY])
+
 
 /******************************* PUBLIC API FUNCTIONS **********************************/
 
@@ -197,12 +215,15 @@ esp_err_t gdo_init(const gdo_config_t *config)
 
   if (!g_config.obst_from_status && g_config.obst_in_pin > 0)
   {
+    // obst_invert flips the idle/pull direction and the edge we interrupt on so an
+    // inverted obstruction sensor (idle low, pulses high) is treated the same as the
+    // default (idle high, pulses low).
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << g_config.obst_in_pin),
         .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_NEGEDGE,
+        .pull_up_en = g_config.obst_invert ? GPIO_PULLUP_DISABLE : GPIO_PULLUP_ENABLE,
+        .pull_down_en = g_config.obst_invert ? GPIO_PULLDOWN_ENABLE : GPIO_PULLDOWN_DISABLE,
+        .intr_type = g_config.obst_invert ? GPIO_INTR_POSEDGE : GPIO_INTR_NEGEDGE,
     };
 
     // Initialize the global obstruction stats
@@ -490,6 +511,12 @@ esp_err_t gdo_deinit(void)
   g_status.paired_devices.total_all = GDO_PAIRED_DEVICE_COUNT_UNKNOWN;
   g_status.openings = 0;
   g_status.ttc_seconds = 0;
+  g_status.ttc_countdown = 0;
+  g_status.ttc_state = GDO_TTC_STATE_OFF;
+  g_status.light_timer_seconds = 0;
+  g_status.auto_light_enabled = false;
+  g_status.fw_major = 0;
+  g_status.fw_minor = 0;
   g_status.open_ms = 0;
   g_status.close_ms = 0;
   g_status.door_position = -1;
@@ -572,7 +599,7 @@ esp_err_t gdo_start(gdo_event_callback_t event_callback, void *user_arg)
 #if defined(CONFIG_FREERTOS_UNICORE) || defined(NO_CORE_PINNING)
     if (xTaskCreate(gdo_contact_task, "gdo_open_ISR", GDO_TASK_STACK_SIZE, &info, GDO_TASK_PRIORITY_HIGH, &gdo_contact_task_handle[GDO_CONTACT_DOOR_OPEN - 1]) != pdPASS)
 #else
-    if (xTaskCreatePinnedToCore(gdo_contact_task, "gdo_open_ISR", GDO_TASK_STACK_SIZE, &info, GDO_TASK_PRIORITY_HIGH, &gdo_contact_task_handle[GDO_CONTACT_DOOR_OPEN - 1], 1) != pdPASS)
+    if (xTaskCreatePinnedToCore(gdo_contact_task, "gdo_open_ISR", GDO_TASK_STACK_SIZE, &info, GDO_TASK_PRIORITY_HIGH, &gdo_contact_task_handle[GDO_CONTACT_DOOR_OPEN - 1], 0) != pdPASS)
 #endif
     {
       return ESP_ERR_NO_MEM;
@@ -589,7 +616,7 @@ esp_err_t gdo_start(gdo_event_callback_t event_callback, void *user_arg)
 #if defined(CONFIG_FREERTOS_UNICORE) || defined(NO_CORE_PINNING)
     if (xTaskCreate(gdo_contact_task, "gdo_close_ISR", GDO_TASK_STACK_SIZE, &info, GDO_TASK_PRIORITY_HIGH, &gdo_contact_task_handle[GDO_CONTACT_DOOR_CLOSE - 1]) != pdPASS)
 #else
-    if (xTaskCreatePinnedToCore(gdo_contact_task, "gdo_close_ISR", GDO_TASK_STACK_SIZE, &info, GDO_TASK_PRIORITY_HIGH, &gdo_contact_task_handle[GDO_CONTACT_DOOR_CLOSE - 1], 1) != pdPASS)
+    if (xTaskCreatePinnedToCore(gdo_contact_task, "gdo_close_ISR", GDO_TASK_STACK_SIZE, &info, GDO_TASK_PRIORITY_HIGH, &gdo_contact_task_handle[GDO_CONTACT_DOOR_CLOSE - 1], 0) != pdPASS)
 #endif
     {
       return ESP_ERR_NO_MEM;
@@ -638,10 +665,34 @@ esp_err_t gdo_get_status(gdo_status_t *status)
   {
     return ESP_ERR_INVALID_ARG;
   }
-  portENTER_CRITICAL(&gdo_spinlock);
   *status = g_status;
-  portEXIT_CRITICAL(&gdo_spinlock);
   return ESP_OK;
+}
+
+/**
+ * @brief Trigger a request to get the current firmware of the GDO, only valid for security+v2 protocol.
+ * @param void
+ * @return ESP_OK on success, ESP_ERR_INVALID_ARG if on fail.
+ */
+esp_err_t gdo_get_firmware(void)
+{
+  return queue_command(GDO_CMD_GET_FIRMWARE, 0, 0, 0);
+}
+
+/**
+ * @brief Requests the TTC setting and hold/release state, only valid for Security+ 2.0.
+ * @param void
+ * @return ESP_OK on success, ESP_ERR_INVALID_ARG if on fail.
+ */
+esp_err_t gdo_get_ttc_state(void)
+{
+  esp_err_t err = queue_command(GDO_CMD_PAIR_3, 0, 0, 0);
+  if (err != ESP_OK)
+  {
+    return err;
+  }
+
+  return queue_command(GDO_CMD_GET_TTC, 0, 0, 0);
 }
 
 /**
@@ -660,19 +711,19 @@ esp_err_t gdo_get_obstruction_pulse_stats(gdo_obstruction_pulse_stats_t *stats, 
 
   uint64_t current_time = esp_timer_get_time();
 
-  portENTER_CRITICAL(&gdo_spinlock);
-  stats->pulses = obst_pulses;
+  portENTER_CRITICAL(&obst_stats.mux);
+  stats->pulses = obst_stats.pulses;
   stats->current_pulse_count = obst_stats.count;
   stats->last_pulse_time_us = obst_stats.last_pulse_micros;
 
   // Clear counters if requested
   if (clear_counters) {
-    obst_pulses = 0;
+    obst_stats.pulses = 0;
     obst_stats.count = 0;
     obst_stats.last_pulse_micros = 0;
   }
 
-  portEXIT_CRITICAL(&gdo_spinlock);
+  portEXIT_CRITICAL(&obst_stats.mux);
 
   // Calculate time since last pulse in milliseconds
   if (stats->last_pulse_time_us > 0)
@@ -708,7 +759,7 @@ esp_err_t gdo_sync(void)
 #if defined(CONFIG_FREERTOS_UNICORE) || defined(NO_CORE_PINNING)
     if (xTaskCreate(gdo_sync_task, "gdo_sync_task", GDO_TASK_STACK_SIZE, NULL, GDO_TASK_PRIORITY_MEDIUM, &gdo_sync_task_handle) != pdPASS)
 #else
-    if (xTaskCreatePinnedToCore(gdo_sync_task, "gdo_sync_task", GDO_TASK_STACK_SIZE, NULL, GDO_TASK_PRIORITY_MEDIUM, &gdo_sync_task_handle, 1) != pdPASS)
+    if (xTaskCreatePinnedToCore(gdo_sync_task, "gdo_sync_task", GDO_TASK_STACK_SIZE, NULL, GDO_TASK_PRIORITY_MEDIUM, &gdo_sync_task_handle, 0) != pdPASS)
 #endif
     {
       return ESP_ERR_NO_MEM;
@@ -1190,34 +1241,39 @@ esp_err_t gdo_set_protocol(gdo_protocol_type_t protocol)
 }
 
 /**
- * @brief Sets the time the door takes to open from fully closed in
- * milliseconds.
+ * @brief Sets the time the door takes to open from fully closed in milliseconds.
+ * If set to zero then recalibration will be triggered.
  * @param ms The time the door takes to open from fully closed in milliseconds.
  * @return ESP_OK on success, ESP_ERR_INVALID_ARG if the ms is invalid.
  */
 esp_err_t gdo_set_open_duration(uint16_t ms)
 {
-  if (ms < 1000 || ms > 65000)
+  if (ms != 0 && (ms < GDO_MIN_DURATION_MS || ms > GDO_MAX_DURATION_MS))
   {
     return ESP_ERR_INVALID_ARG;
   }
-
+  // Initialize the open history with the new duration, which may be zero.
+  openHistory = (DoorHistory){GDO_MAX_HISTORY, (ms == 0) ? 0 : 1, {0}};
+  openHistory.duration[0] = ms;
   g_status.open_ms = ms;
   return ESP_OK;
 }
 
 /**
  * @brief Sets the time the door takes to close from fully open in milliseconds.
+ * If set to zero then recalibration will be triggered.
  * @param ms The time the door takes to close from fully open in milliseconds.
  * @return ESP_OK on success, ESP_ERR_INVALID_ARG if the ms is invalid.
  */
 esp_err_t gdo_set_close_duration(uint16_t ms)
 {
-  if (ms < 1000 || ms > 65000)
+  if (ms != 0 && (ms < GDO_MIN_DURATION_MS || ms > GDO_MAX_DURATION_MS))
   {
     return ESP_ERR_INVALID_ARG;
   }
-
+  // Initialize the close history with the new duration, which may be zero.
+  closeHistory = (DoorHistory){GDO_MAX_HISTORY, (ms == 0) ? 0 : 1, {0}};
+  closeHistory.duration[0] = ms;
   g_status.close_ms = ms;
   return ESP_OK;
 }
@@ -1408,6 +1464,7 @@ static void IRAM_ATTR obst_isr_handler(void *arg)
 
   portENTER_CRITICAL_ISR(&stats->mux);
   ++stats->count;
+  ++stats->pulses;
   portEXIT_CRITICAL_ISR(&stats->mux);
 }
 
@@ -1426,6 +1483,9 @@ static void obst_timer_cb(void *arg)
   gdo_obstruction_state_t obs_state = GDO_OBSTRUCTION_STATE_MAX;
   int count_snapshot;
   int64_t last_pulse_snapshot;
+  // Normalize the raw pin level so the rest of this function can keep treating
+  // "low" as the idle/asleep level regardless of obst_invert.
+  bool pin_low = gpio_get_level(g_config.obst_in_pin) ? g_config.obst_invert : !g_config.obst_invert;
 
   // Take snapshot of shared data under critical section
   portENTER_CRITICAL(&stats->mux);
@@ -1434,19 +1494,20 @@ static void obst_timer_cb(void *arg)
   stats->count = 0;  // Reset count for next period
   portEXIT_CRITICAL(&stats->mux);
 
-  ESP_LOGD(TAG, "obst_timer: count=%d last_pulse=%lld now=%lld pin=%d",
-           count_snapshot, last_pulse_snapshot, micros_now, gpio_get_level(g_config.obst_in_pin));
-
   if (count_snapshot > 3)
   {
+    // Track "now" (not 0) as the debounce baseline so a single noisy tick with
+    // zero counted pulses right after a clear period can't be misread as having
+    // been silent since boot, which would instantly exceed the 700ms obstructed
+    // threshold below and cause a spurious obstructed->clear blip.
     portENTER_CRITICAL(&stats->mux);
-    stats->last_pulse_micros = 0;
+    stats->last_pulse_micros = micros_now;
     portEXIT_CRITICAL(&stats->mux);
     obs_state = GDO_OBSTRUCTION_STATE_CLEAR;
   }
   else if (count_snapshot == 0)
   {
-    if (!gpio_get_level(g_config.obst_in_pin))
+    if (pin_low)
     {
       portENTER_CRITICAL(&stats->mux);
       stats->last_pulse_micros = micros_now;
@@ -1458,8 +1519,6 @@ static void obst_timer_cb(void *arg)
       obs_state = GDO_OBSTRUCTION_STATE_OBSTRUCTED;
     }
   }
-
-  ESP_LOGD(TAG, "obst_timer: obs_state=%d current_status=%d", obs_state, g_status.obstruction);
 
   if (obs_state != GDO_OBSTRUCTION_STATE_MAX && obs_state != g_status.obstruction)
   {
@@ -1981,6 +2040,13 @@ static void decode_packet(uint8_t *packet)
       update_obstruction_state((gdo_obstruction_state_t)((byte1 >> 6) & 1));
     }
   }
+  else if (cmd == GDO_CMD_FIRMWARE)
+  {
+    g_status.fw_major = byte1;
+    g_status.fw_minor = byte2;
+    ESP_LOGI(TAG, "GDO firmware: %u.%u", byte1, byte2);
+    send_event(GDO_CB_EVENT_FIRMWARE);
+  }
   else if (cmd == GDO_CMD_LIGHT)
   {
     handle_light_action((gdo_light_action_t)nibble);
@@ -1997,22 +2063,106 @@ static void decode_packet(uint8_t *packet)
   {
     update_motion_state(GDO_MOTION_STATE_DETECTED);
   }
+  else if (cmd == GDO_CMD_SET_AUTO_LIGHT_MODE)
+  {
+    bool new_state = (nibble & 0x1) != 0;
+    if (g_status.auto_light_enabled != new_state)
+    {
+      g_status.auto_light_enabled = new_state;
+      send_event(GDO_CB_EVENT_AUTO_LIGHT_MODE);
+    }
+  }
   else if (cmd == GDO_CMD_OPENINGS)
   {
     update_openings(nibble, ((byte1 << 8) | byte2));
   }
   else if (cmd == GDO_CMD_UPDATE_TTC)
   {
-    update_ttc((byte1 << 8) | byte2);
+    g_status.ttc_countdown = (byte1 << 8) | byte2;
     send_event(GDO_CB_EVENT_UPDATE_TTC);
+  }
+  else if (cmd == GDO_CMD_PAIR_2_RESP)
+  {
+    uint16_t value = (byte1 << 8) | byte2;
+    if (nibble == 0x1)
+    {
+      // TTC (Time-To-Close) configuration
+      if (g_status.ttc_countdown != value)
+      {
+        g_status.ttc_countdown = value;
+        send_event(GDO_CB_EVENT_UPDATE_TTC);
+      }
+    }
+    else if (nibble == 0x5)
+    {
+      // Light timer configuration
+      if (g_status.light_timer_seconds != value)
+      {
+        g_status.light_timer_seconds = value;
+        //send_event(GDO_CB_EVENT_SET_LIGHT_TIMER);
+      }
+    }
   }
   else if (cmd == GDO_CMD_SET_TTC)
   {
+    g_status.ttc_countdown = (byte1 << 8) | byte2;
+    g_status.ttc_seconds = (byte1 << 8) | byte2;
     send_event(GDO_CB_EVENT_SET_TTC);
   }
   else if (cmd == GDO_CMD_CANCEL_TTC)
   {
     send_event(GDO_CB_EVENT_CANCEL_TTC);
+  }
+  else if (cmd == GDO_CMD_PAIR_3)
+  {
+    send_event(GDO_CB_EVENT_PAIR_3);
+  }
+  else if (cmd == GDO_CMD_PAIR_3_RESP)
+  {
+    gdo_ttc_state_t new_state = GDO_TTC_STATE_MAX;
+    gdo_cb_event_t event = GDO_CB_EVENT_MAX;
+
+    switch (byte1)
+    {
+      case 0x02:
+        new_state = GDO_TTC_STATE_COUNTDOWN;
+        event = GDO_CB_EVENT_TTC;
+        gdo_send_pair_3_resp();
+        break;
+      case 0x09:
+        new_state = GDO_TTC_STATE_OFF;
+        event = GDO_CB_EVENT_CANCEL_TTC;
+        break;
+      case 0x0A:
+        new_state = GDO_TTC_STATE_HOLD;
+        event = GDO_CB_EVENT_HOLD_TTC;
+        break;
+      case 0x0B:
+        new_state = GDO_TTC_STATE_ALARM;
+        event = GDO_CB_EVENT_UPDATE_TTC;
+        break;
+      case 0x0C:
+        new_state = GDO_TTC_STATE_REL;
+        event = GDO_CB_EVENT_REL_TTC;
+        break;
+      case 0x0D:
+        new_state = GDO_TTC_STATE_ERROR;
+        event = GDO_CB_EVENT_TTC;
+        ESP_LOGW(TAG, "TTC Error state detected - door could not close");
+        break;
+      default:
+        ESP_LOGD(TAG, "Unknown PAIR_3_RESP state: 0x%02x", byte1);
+        return;
+    }
+
+    if (g_status.ttc_state != new_state)
+    {
+      g_status.ttc_state = new_state;
+      if (event != GDO_CB_EVENT_MAX)
+      {
+        send_event(event);
+      }
+    }
   }
   else if (cmd == GDO_CMD_PAIRED_DEVICES)
   {
@@ -2113,9 +2263,15 @@ static void gdo_main_task(void *arg)
 
           if (rx_packet_size > GDO_PACKET_SIZE)
           {
-            ESP_LOGW(TAG, "Oversized packet received: %u bytes, messages pending: %u", rx_packet_size, rx_pending);
-            // Sometimes the break is interperated as a 0 byte and added to the packet
-            // So lets just dump the first byte(s) until we have our packet size.
+            // V2 clients prepend a mark-space byte; rx_packet_size == GDO_PACKET_SIZE+1 is normal
+            if (rx_packet_size == GDO_PACKET_SIZE + 1)
+            {
+              ESP_LOGV(TAG, "Mark-space byte prepended by remote client, stripping");
+            }
+            else
+            {
+              ESP_LOGW(TAG, "Oversized packet received: %u bytes, messages pending: %u", rx_packet_size, rx_pending);
+            }
             while (rx_packet_size > GDO_PACKET_SIZE)
             {
               if (uart_read_bytes(g_config.uart_num, rx_buffer, 1, 0) < 0)
@@ -2165,46 +2321,39 @@ static void gdo_main_task(void *arg)
 
           rx_buf_index += bytes_read;
 
-          if (rx_buf_index >= GDO_PACKET_SIZE)
+          // Parse as a stream: toggle commands are single byte, other commands are followed by a response byte.
+          uint16_t i = 0;
+          while (i < rx_buf_index)
           {
-            // Filter out invalid bytes before processing to prevent mark/space bytes from being processed
-            uint8_t filtered_buffer[RX_BUFFER_SIZE * 2];
-            uint8_t filtered_index = 0;
-
-            for (uint8_t i = 0; i < rx_buf_index; i++)
+            uint8_t pkt[2] = {rx_buffer[i], 0};
+            if (!GDO_V1_CMD_IS_VALID(pkt[0]))
             {
-              if (GDO_V1_CMD_IS_VALID(rx_buffer[i]) || (i > 0 && GDO_V1_CMD_IS_VALID(rx_buffer[i - 1])))
+              // Mark/space or noise byte
+              ESP_LOGD(TAG, "Filtering out invalid/noise byte: 0x%02x", pkt[0]);
+              i++;
+              continue;
+            }
+
+            if (pkt[0] > V1_CMD_TOGGLE_MAX)
+            {
+              if (i + 1 >= rx_buf_index)
               {
-                // Keep valid commands and their response bytes
-                filtered_buffer[filtered_index++] = rx_buffer[i];
+                // Incomplete packet, wait for the response byte
+                break;
               }
-              else
-              {
-                ESP_LOGD(TAG, "Filtering out invalid/noise byte: 0x%02x", rx_buffer[i]);
-              }
+              pkt[1] = rx_buffer[++i];
             }
 
-            // Process filtered buffer in pairs
-            uint8_t pkt[2];
-            for (uint8_t i = 0; i < filtered_index - 1; i += 2)
-            {
-              pkt[0] = filtered_buffer[i];
-              pkt[1] = filtered_buffer[i + 1];
-              print_buffer(g_status.protocol, pkt, false);
-              decode_v1_packet(pkt);
-            }
-
-            // Handle any remaining byte
-            if (filtered_index % 2 != 0)
-            {
-              rx_buffer[0] = filtered_buffer[filtered_index - 1];
-              rx_buf_index = 1;
-            }
-            else
-            {
-              rx_buf_index = 0;
-            }
+            i++;
+            print_buffer(g_status.protocol, pkt, false);
+            decode_v1_packet(pkt);
           }
+
+          if (i < rx_buf_index)
+          {
+            memmove(rx_buffer, &rx_buffer[i], rx_buf_index - i);
+          }
+          rx_buf_index -= i;
         }
 
         break;
@@ -2354,6 +2503,9 @@ static void gdo_main_task(void *arg)
       case GDO_EVENT_PAIRED_DEVICES_UPDATE:
         cb_event = GDO_CB_EVENT_PAIRED_DEVICES;
         break;
+      case GDO_EVENT_PAIR_3:
+        cb_event = GDO_CB_EVENT_PAIR_3;
+        break;
       case GDO_EVENT_DOOR_OPEN_DURATION_MEASUREMENT:
         cb_event = GDO_CB_EVENT_OPEN_DURATION_MEASUREMENT;
         break;
@@ -2379,50 +2531,116 @@ static void gdo_main_task(void *arg)
 }
 
 /*************************** STATUS FUNCTIONS ************************************/
+// Calculate median value in an array of uint32_t values.
+// Parameters:
+//   arr - pointer to an array of uint32_t values
+//   n   - number of elements in the array, must be greater than 0 and less than or equal to GDO_MAX_HISTORY
+// Returns:
+//   Median value of the array elements
+uint32_t median(const uint32_t *arr, uint32_t n)
+{
+  if (n == 0 || n > GDO_MAX_HISTORY)
+  {
+    return 0;
+  }
+  else if (n == 1)
+  {
+    return arr[0];
+  }
+  else if (n == 2)
+  {
+    return (arr[0] + arr[1]) / 2;
+  }
+  else
+  {
+    // Insertion sort input array into temporary copy
+    uint32_t cpy[GDO_MAX_HISTORY] = {0};
+    for (uint32_t i = 0; i < n; i++)
+    {
+      int32_t j = i - 1;
+      while (j >= 0 && cpy[j] > arr[i])
+      {
+        cpy[j + 1] = cpy[j];
+        j--;
+      }
+      cpy[j + 1] = arr[i];
+    }
+    // return median in the array
+    if (n % 2 == 1)
+    {
+      // odd size array
+      return cpy[n / 2];
+    }
+    else
+    {
+      // even size array
+      return (cpy[(n / 2) - 1] + cpy[n / 2]) / 2;
+    }
+  }
+}
 
 static void update_door_state(const gdo_door_state_t door_state)
 {
-  static int64_t start_opening = 0;
-  static int64_t start_closing = 0;
-  static int32_t open_counter = 0;
-  static int64_t open_average = 0;
-  static int32_t close_counter = 0;
-  static int64_t close_average = 0;
-#define AVERAGE_OVER 5 // the number of door open/close operations we will average over
+  static uint32_t start_opening = 0;
+  static uint32_t start_closing = 0;
+  const gdo_door_state_t previous_door_state = g_status.door;
 
   if (door_state == GDO_DOOR_STATE_OPENING && g_status.door == GDO_DOOR_STATE_CLOSED)
   {
-    start_opening = esp_timer_get_time();
-    ESP_LOGD(TAG, "Record start time of door opening: %lld", start_opening / 1000LL);
+    // convert from microseconds to milliseconds for all calculations
+    start_opening = (uint32_t)(esp_timer_get_time() / 1000);
+    ESP_LOGD(TAG, "Record start time of door opening: %lums", start_opening);
   }
   else if (door_state == GDO_DOOR_STATE_OPEN && g_status.door == GDO_DOOR_STATE_OPENING && start_opening > 0)
   {
-    int64_t open_duration = esp_timer_get_time() - start_opening;
-    open_counter++;
-    open_average += (open_duration - open_average) / ((AVERAGE_OVER < open_counter) ? AVERAGE_OVER : open_counter);
-    g_status.open_ms = (uint16_t)(open_average / 1000LL);
-    ESP_LOGD(TAG, "Door open duration: %lldms, average: %ums", open_duration / 1000LL, g_status.open_ms);
-    queue_event((gdo_event_t){GDO_EVENT_DOOR_OPEN_DURATION_MEASUREMENT});
+    // convert from microseconds to milliseconds for all calculations
+    uint32_t open_duration = (uint32_t)(esp_timer_get_time() / 1000) - start_opening;
+    if (GDO_MIN_DURATION_MS <= open_duration && open_duration <= GDO_MAX_DURATION_MS)
+    {
+      openHistory.duration[openHistory.count++ % GDO_MAX_HISTORY] = open_duration;
+      g_status.open_ms = (uint16_t)median(openHistory.duration, MIN(openHistory.count, GDO_MAX_HISTORY));
+      ESP_LOGD(TAG, "Door open duration: %lums, History: %lums, %lums, %lums, %lums, %lums; Median: %lums",
+               open_duration, OPEN_HISTORY(2), OPEN_HISTORY(3), OPEN_HISTORY(4), OPEN_HISTORY(5), OPEN_HISTORY(6), g_status.open_ms);
+      queue_event((gdo_event_t){GDO_EVENT_DOOR_OPEN_DURATION_MEASUREMENT});
+    }
+    else
+    {
+      start_opening = 0;
+      ESP_LOGW(TAG, "Ignoring implausibly short or long open duration: %lums", open_duration);
+    }
   }
   else if (door_state == GDO_DOOR_STATE_CLOSING && g_status.door == GDO_DOOR_STATE_OPEN)
   {
-    start_closing = esp_timer_get_time();
-    ESP_LOGD(TAG, "Record start time of door closing: %lld", start_closing / 1000LL);
+    // convert from microseconds to milliseconds for all calculations
+    start_closing =(uint32_t)(esp_timer_get_time() / 1000);
+    ESP_LOGD(TAG, "Record start time of door closing: %lums", start_closing);
   }
   else if (door_state == GDO_DOOR_STATE_CLOSED && g_status.door == GDO_DOOR_STATE_CLOSING && start_closing > 0)
   {
-    int64_t close_duration = esp_timer_get_time() - start_closing;
-    close_counter++;
-    close_average += (close_duration - close_average) / ((AVERAGE_OVER < close_counter) ? AVERAGE_OVER : close_counter);
-    g_status.close_ms = (uint16_t)(close_average / 1000LL);
-    ESP_LOGD(TAG, "Door close duration: %lldms, average: %ums", close_duration / 1000LL, g_status.close_ms);
-    queue_event((gdo_event_t){GDO_EVENT_DOOR_CLOSE_DURATION_MEASUREMENT});
+    // convert from microseconds to milliseconds for all calculations
+    uint32_t close_duration = (uint32_t)(esp_timer_get_time() / 1000) - start_closing;
+    if (GDO_MIN_DURATION_MS <= close_duration && close_duration <= GDO_MAX_DURATION_MS)
+    {
+      closeHistory.duration[closeHistory.count++ % GDO_MAX_HISTORY] = close_duration;
+      g_status.close_ms = (uint16_t)median(closeHistory.duration, MIN(closeHistory.count, GDO_MAX_HISTORY));
+      ESP_LOGD(TAG, "Door close duration: %lums, History: %lums, %lums, %lums, %lums, %lums; Median: %lums",
+               close_duration, CLOSE_HISTORY(2), CLOSE_HISTORY(3), CLOSE_HISTORY(4), CLOSE_HISTORY(5), CLOSE_HISTORY(6), g_status.close_ms);
+      queue_event((gdo_event_t){GDO_EVENT_DOOR_CLOSE_DURATION_MEASUREMENT});
+    }
+    else
+    {
+      start_closing = 0;
+      ESP_LOGW(TAG, "Ignoring implausibly short or long close duration: %lums", close_duration);
+    }
   }
-  else if (door_state == GDO_DOOR_STATE_STOPPED)
+  else if ((door_state == GDO_DOOR_STATE_STOPPED && (start_opening > 0 || start_closing > 0)) ||
+           (door_state == GDO_DOOR_STATE_OPENING && g_status.door == GDO_DOOR_STATE_CLOSING) ||
+           (door_state == GDO_DOOR_STATE_CLOSING && g_status.door == GDO_DOOR_STATE_OPENING))
   {
     // If door is stopped (neither fully open or fully closed) then abort measuring duration
     start_opening = 0;
     start_closing = 0;
+    ESP_LOGD(TAG, "Aborting door open/close duration calculation");
   }
 
   if (door_state == GDO_DOOR_STATE_OPENING || door_state == GDO_DOOR_STATE_CLOSING)
@@ -2442,10 +2660,29 @@ static void update_door_state(const gdo_door_state_t door_state)
 
     if (door_state == GDO_DOOR_STATE_STOPPED)
     {
-      int delta = g_status.door_position - g_status.door_target;
-      if (delta < -5000 || delta > 5000)
+      // V1 doors with dry-contact sensors are susceptible to wire noise causing brief
+      // spurious stopped signals. Debounce required.
+      if (g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1 ||
+          g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL)
       {
-        ESP_LOGE(TAG, "Door failed to reach target");
+        uint32_t time_moving_ms = (uint32_t)(esp_timer_get_time() / 1000) - g_door_start_moving_ms;
+        if (time_moving_ms > 500)
+        {
+          int delta = g_status.door_position - g_status.door_target;
+          if (delta < -5000 || delta > 5000)
+          {
+            ESP_LOGE(TAG, "Door failed to reach target.");
+          }
+        }
+      }
+      else
+      {
+        // V2 doors don't need debouncing
+        int delta = g_status.door_position - g_status.door_target;
+        if (delta < -5000 || delta > 5000)
+        {
+          ESP_LOGE(TAG, "Door failed to reach target.");
+        }
       }
     }
     else if (door_state == GDO_DOOR_STATE_OPEN)
@@ -2470,15 +2707,6 @@ static void update_door_state(const gdo_door_state_t door_state)
     }
   }
 
-  // Notify sync task if door state changed from UNKNOWN during V1 detection
-  // This includes UNKNOWN protocol (auto-detect) and V1 protocols
-  if (g_status.door == GDO_DOOR_STATE_UNKNOWN &&
-      (g_status.protocol == GDO_PROTOCOL_UNKNOWN || (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1)) &&
-      gdo_sync_task_handle)
-  {
-    xTaskNotifyGive(gdo_sync_task_handle);
-  }
-
   static int32_t previous_door_position = -1;
   static int32_t previous_door_target = -1;
   if ((door_state != g_status.door) || (previous_door_position != g_status.door_position) || (previous_door_target != g_status.door_target))
@@ -2492,6 +2720,16 @@ static void update_door_state(const gdo_door_state_t door_state)
   else
   {
     ESP_LOGV(TAG, "Door state: %s", gdo_door_state_to_string(door_state));
+  }
+
+  // Notify sync task once the door state is known during V1 detection, after g_status.door is updated
+  // so the sync task never reads a stale UNKNOWN state.
+  if (previous_door_state == GDO_DOOR_STATE_UNKNOWN &&
+      door_state != GDO_DOOR_STATE_UNKNOWN &&
+      (g_status.protocol == GDO_PROTOCOL_UNKNOWN || (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1)) &&
+      gdo_sync_task_handle)
+  {
+    xTaskNotifyGive(gdo_sync_task_handle);
   }
 }
 
@@ -2852,14 +3090,14 @@ inline static void update_openings(uint8_t flag, uint16_t count)
 
 /**
  * @brief Updates the local TTC and queues an event if it has changed.
- * @param ttc The new TTC to update to.
+ * @param time_to_close The new TTC to update to.
  */
-inline static void update_ttc(uint16_t ttc)
+inline static void update_ttc(uint16_t time_to_close)
 {
-  ESP_LOGI(TAG, "TTC Seconds remaining: %u", ttc);
-  if (g_status.ttc_seconds != ttc)
+  ESP_LOGI(TAG, "TTC setting: %u seconds", time_to_close);
+  if (g_status.ttc_seconds != time_to_close)
   {
-    g_status.ttc_seconds = ttc;
+    g_status.ttc_seconds = time_to_close;
   }
 }
 
@@ -2869,29 +3107,132 @@ inline static void update_ttc(uint16_t ttc)
  */
 esp_err_t gdo_set_time_to_close(uint16_t time_to_close)
 {
-  esp_err_t err = ESP_OK;
   uint8_t byte1 = (time_to_close >> 8);
   uint8_t byte2 = (uint8_t)time_to_close;
   uint8_t nibble = 1;
+  esp_err_t err = queue_command(GDO_CMD_SET_TTC, nibble, byte1, byte2);
+  if (err != ESP_OK)
+  {
+    return err;
+  }
+
   update_ttc(time_to_close);
-  queue_command(GDO_CMD_SET_TTC, nibble, byte1, byte2);
   queue_event((gdo_event_t){GDO_EVENT_SET_TTC});
   return err;
 }
 
 /**
- * @brief Cancel or toggle the time to close feature (Hold/Release TTC from wall panel)
+ * @brief Cancel the time to close feature on security+ v2.0 devices.
  * @return ESP_OK on success
  */
 esp_err_t gdo_cancel_ttc(void)
 {
-  esp_err_t err = ESP_OK;
   uint8_t byte1 = 0x05;
   uint8_t byte2 = 0x00;
   uint8_t nibble = 1;
-  queue_command(GDO_CMD_CANCEL_TTC, nibble, byte1, byte2);
+  esp_err_t err = queue_command(GDO_CMD_CANCEL_TTC, nibble, byte1, byte2);
+  if (err != ESP_OK)
+  {
+    return err;
+  }
+
   queue_event((gdo_event_t){GDO_EVENT_CANCEL_TTC});
   return err;
+}
+
+/**
+ * @brief Toggle the time-to-close hold/release feature. This uses the CANCEL_TTC command to achieve the toggle.
+ * This command was originally intended for canceling the TTC, but it can also be used to toggle the hold/release state.
+ * @return ESP_OK on success.
+ */
+esp_err_t gdo_enable_ttc(void)
+{
+  uint8_t byte1 = 0x04;
+  uint8_t byte2 = 0x00;
+  uint8_t nibble = 1;
+  esp_err_t err = queue_command(GDO_CMD_CANCEL_TTC, nibble, byte1, byte2);
+  if (err != ESP_OK)
+  {
+    return err;
+  }
+
+  queue_event((gdo_event_t){GDO_EVENT_ENABLE_TTC});
+  return err;
+}
+
+/**
+ * @brief Send a PAIR_3_RESP command with byte1 set to 0x01.
+ * @return ESP_OK on success.
+ */
+esp_err_t gdo_send_pair_3_resp(void)
+{
+  uint8_t byte1 = 0x01;
+  uint8_t byte2 = 0x00;
+  uint8_t nibble = 1;
+  return queue_command(GDO_CMD_PAIR_3_RESP, nibble, byte1, byte2);
+}
+
+/**
+ * @brief Enable the time-to-close feature.
+ * @return ESP_OK on success.
+ */
+esp_err_t gdo_set_auto_light_mode(bool enabled)
+{
+  uint8_t nibble = enabled ? 0x1 : 0x0;
+  uint8_t byte1 = 0x00;
+  uint8_t byte2 = 0x00;
+  esp_err_t err = queue_command(GDO_CMD_SET_AUTO_LIGHT_MODE, nibble, byte1, byte2);
+  if (err != ESP_OK)
+  {
+    return err;
+  }
+
+  g_status.auto_light_enabled = enabled;
+  send_event(GDO_CB_EVENT_AUTO_LIGHT_MODE);
+  return err;
+}
+/**
+ * @brief Set the light timer duration in seconds.
+ * @param seconds The light timer duration in seconds.
+ * @return ESP_OK on success.
+ */
+esp_err_t gdo_set_light_timer(uint16_t seconds)
+{
+  uint8_t byte1 = (seconds >> 8) & 0xFF;
+  uint8_t byte2 = seconds & 0xFF;
+  uint8_t nibble = 0x5;
+  esp_err_t err = queue_command(GDO_CMD_PAIR_2, nibble, byte1, byte2);
+  if (err != ESP_OK)
+  {
+    return err;
+  }
+
+  g_status.light_timer_seconds = seconds;
+  send_event(GDO_CB_EVENT_UPDATE_TTC);
+  return err;
+}
+
+/**
+ * @brief Set the TTC state.
+ * @param state The TTC state to set.
+ * @return ESP_OK on success.
+ */
+esp_err_t gdo_set_ttc_state(gdo_ttc_state_t state)
+{
+  g_status.ttc_state = state;
+  return ESP_OK;
+}
+
+
+esp_err_t gdo_send_command(uint16_t command, uint8_t nibble,
+                           uint8_t byte1, uint8_t byte2)
+{
+  if (command > 0x0fff || nibble > 0x0f)
+  {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  return queue_command((gdo_command_t)command, nibble, byte1, byte2);
 }
 
 /**
@@ -2921,6 +3262,16 @@ void gdo_set_obst_override(bool obst_override)
 {
   g_status.obst_override = obst_override;
   ESP_LOGI(TAG, "Obstruction override %s", obst_override ? "enabled" : "disabled");
+}
+
+/**
+ * @brief Enables or disables obstruction from status, some openers that do not have obstruction sensors connected.
+ * @param obst_status true to enable from status, false to disable.
+ */
+void gdo_set_obst_from_status(bool obst_status)
+{
+  g_status.obst_from_status = obst_status;
+  ESP_LOGI(TAG, "Obstruction from status %s", obst_status ? "enabled" : "disabled");
 }
 
 /**

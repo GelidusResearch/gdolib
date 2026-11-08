@@ -19,6 +19,10 @@
 #ifndef GDO_PRIV_H
 #define GDO_PRIV_H
 
+#ifndef MIN
+#define MIN(a,b) ((a)<(b)?(a):(b))
+#endif
+
 #ifdef __cplusplus
 extern "C"
 {
@@ -49,24 +53,38 @@ extern "C"
 #define GDO_V1_CMD_IS_VALID(cmd) ((cmd) > V1_CMD_MIN && (cmd) < V1_CMD_MAX)
 
 // Motion detection timeout in milliseconds (after which we declare motion inactive)
+#ifndef GDO_MOTION_TIMEOUT_MS
 #define GDO_MOTION_TIMEOUT_MS 3000
+#endif
+
+// For calculating door operation duration medians
+#ifndef GDO_MAX_DURATION_MS
+#define GDO_MAX_DURATION_MS (65 * 1000) // Maximum time it should take to open/close a door
+#endif
+#ifndef GDO_MIN_DURATION_MS
+#define GDO_MIN_DURATION_MS (3 * 1000)  // Minimum time it should take to open/close a door
+#endif
+#define GDO_MAX_HISTORY 6               // Number of door operations to calculate median across
 
     typedef enum
     {
-        GDO_CMD_UNKNOWN = 0x000,
+        GDO_CMD_GET_FIRMWARE = 0x000,
+        GDO_CMD_FIRMWARE = 0x001,
         GDO_CMD_GET_STATUS = 0x080,
         GDO_CMD_STATUS = 0x081,
         GDO_CMD_OBST_1 = 0x084,
         GDO_CMD_OBST_2 = 0x085,
-        GDO_CMD_BATTERY_STATUS = 0x09d,
-        GDO_CMD_PAIR_3 = 0x0a0,
-        GDO_CMD_PAIR_3_RESP = 0x0a1,
+        GDO_CMD_GET_BATTERY = 0x09C,
+        GDO_CMD_BATTERY_STATUS = 0x09D,
+        GDO_CMD_PAIR_3 = 0x0A0,
+        GDO_CMD_PAIR_3_RESP = 0x0A1,
         GDO_CMD_LEARN = 0x181,
-        GDO_CMD_LOCK = 0x18c,
+        GDO_CMD_LOCK = 0x18C,
         GDO_CMD_DOOR_ACTION = 0x280,
         GDO_CMD_LIGHT = 0x281,
         GDO_CMD_MOTOR_ON = 0x284,
         GDO_CMD_MOTION = 0x285,
+        GDO_CMD_SET_AUTO_LIGHT_MODE = 0x182,
         GDO_CMD_GET_PAIRED_DEVICES = 0x307,
         GDO_CMD_PAIRED_DEVICES = 0x308,
         GDO_CMD_CLEAR_PAIRED_DEVICES = 0x30D,
@@ -77,9 +95,10 @@ extern "C"
         GDO_CMD_PAIR_2_RESP = 0x401,
         GDO_CMD_SET_TTC = 0x402,
         GDO_CMD_CANCEL_TTC = 0x408,
-        GDO_CMD_UPDATE_TTC = 0x40a,
-        GDO_CMD_GET_OPENINGS = 0x48b,
-        GDO_CMD_OPENINGS = 0x48c,
+        GDO_CMD_GET_TTC = 0x409,
+        GDO_CMD_UPDATE_TTC = 0x40A,
+        GDO_CMD_GET_OPENINGS = 0x48B,
+        GDO_CMD_OPENINGS = 0x48C,
         GDO_CMD_MAX,
     } gdo_command_t;
 
@@ -92,6 +111,7 @@ extern "C"
         V1_CMD_TOGGLE_LIGHT_RELEASE = 0x33,
         V1_CMD_TOGGLE_LOCK_PRESS = 0x34,
         V1_CMD_TOGGLE_LOCK_RELEASE = 0x35,
+        V1_CMD_TOGGLE_MAX = 0x36,
         V1_CMD_QUERY_DOOR_STATUS_0x37 = 0x37,
         V1_CMD_QUERY_DOOR_STATUS = 0x38,
         V1_CMD_OBSTRUCTION = 0x39,
@@ -115,11 +135,17 @@ extern "C"
         GDO_EVENT_MOTION_UPDATE,
         GDO_EVENT_SET_TTC,
         GDO_EVENT_CANCEL_TTC,
+        GDO_EVENT_TTC,
+        GDO_EVENT_PAIR_3,
+        GDO_EVENT_ENABLE_TTC,
         GDO_EVENT_UPDATE_TTC,
+        GDO_EVENT_HOLD_TTC,
+        GDO_EVENT_RELEASE_TTC,
         GDO_EVENT_PAIRED_DEVICES_UPDATE,
         GDO_EVENT_DOOR_OPEN_DURATION_MEASUREMENT,
         GDO_EVENT_DOOR_CLOSE_DURATION_MEASUREMENT,
         GDO_EVENT_TOF_TIMER,
+        GDO_EVENT_FIRMWARE,
         GDO_EVENT_MAX,
     } gdo_event_type_t;
 
@@ -182,6 +208,7 @@ extern "C"
     {
         int64_t sleep_micros;
         uint32_t count;
+        uint32_t pulses;
         uint64_t last_pulse_micros;
         portMUX_TYPE mux;
     } gdo_obstruction_stats_t;

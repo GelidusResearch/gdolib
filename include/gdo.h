@@ -97,6 +97,17 @@ extern "C"
 
     typedef enum
     {
+        GDO_TTC_STATE_OFF = 0,         // 0x09 - disabled via CANCEL_TTC
+        GDO_TTC_STATE_REL = 1,         // 0x0A - released (countdown available)
+        GDO_TTC_STATE_ALARM = 2,   // 0x0B - countdown running
+        GDO_TTC_STATE_HOLD = 3,        // 0x0C - held (door waiting to close)
+        GDO_TTC_STATE_ERROR = 4,       // 0x0E - error state (post-power-cycle)
+        GDO_TTC_STATE_COUNTDOWN = 5,    // 0x02 - Open door wait state (awaiting response)
+        GDO_TTC_STATE_MAX,
+    } gdo_ttc_state_t;
+
+    typedef enum
+    {
         GDO_PAIRED_DEVICE_TYPE_ALL = 0,
         GDO_PAIRED_DEVICE_TYPE_REMOTE,
         GDO_PAIRED_DEVICE_TYPE_KEYPAD,
@@ -130,11 +141,17 @@ extern "C"
         GDO_CB_EVENT_MOTION,
         GDO_CB_EVENT_SET_TTC,
         GDO_CB_EVENT_CANCEL_TTC,
+        GDO_CB_EVENT_HOLD_TTC,
+        GDO_CB_EVENT_REL_TTC,
         GDO_CB_EVENT_UPDATE_TTC,
+        GDO_CB_EVENT_TTC,
+        GDO_CB_EVENT_PAIR_3,
         GDO_CB_EVENT_PAIRED_DEVICES,
         GDO_CB_EVENT_OPEN_DURATION_MEASUREMENT,
         GDO_CB_EVENT_CLOSE_DURATION_MEASUREMENT,
         GDO_CB_EVENT_TOF_TIMER,
+        GDO_CB_EVENT_FIRMWARE,
+        GDO_CB_EVENT_AUTO_LIGHT_MODE,
         GDO_CB_EVENT_MAX,
     } gdo_cb_event_t;
 
@@ -167,15 +184,20 @@ extern "C"
         gdo_button_state_t button;            // Button state
         gdo_battery_state_t battery;          // Battery state
         gdo_learn_state_t learn;              // Learn state
+        gdo_ttc_state_t ttc_state;            // TTC state
         gdo_paired_device_t paired_devices;   // Paired devices
         gdo_door_state_t last_move_direction; // Last move direction
         bool synced;                          // Synced state
         bool toggle_only;                     // Used when the door opener only supports the toggle command.
         bool obst_override;                   // Used when the door opener has no obstruction sensors.
+        bool obst_from_status;                // Obstruction state derived from status response
         bool tof_timer_active;                // ToF interval timer active
         bool obst_test_pulse_timer_active;    // Obstruction test pulse output pin timer active
+        bool auto_light_enabled;              // Motion-sensor auto-light control enabled
         uint16_t openings;                    // Number of openings
         uint16_t ttc_seconds;                 // Time to close in seconds
+        uint16_t ttc_countdown;               // Time door takes to close from fully open in milliseconds (override)
+        uint16_t light_timer_seconds;         // Light timer duration in seconds
         uint16_t open_ms;                     // Time door takes to open from fully closed in milliseconds
         uint16_t close_ms;                    // Time door takes to close from fully open in milliseconds
         uint16_t vehicle_parked_threshold;    // Distance thats considered a parked state
@@ -184,9 +206,11 @@ extern "C"
         int32_t door_target;                  // Door target position in percentage (0-10000) [OPEN-CLOSED]
         uint32_t client_id;                   // Client ID
         uint32_t rolling_code;                // Rolling code
-        uint32_t tof_timer_usecs;             // ToF interval timer microseconds use to triger TOF events
+        uint32_t tof_timer_usecs;             // ToF interval timer microseconds used to triger TOF events
         uint32_t obst_test_pulse_timer_usecs; // Obstruction test pulse output pin timer microseconds
         uint16_t motion_timeout_ms;           // Motion detection timeout duration in milliseconds
+        uint8_t fw_major;                     // GDO firmware major version
+        uint8_t fw_minor;                     // GDO firmware minor version
     } gdo_status_t;
 
     typedef struct
@@ -247,6 +271,12 @@ extern "C"
      * @note This function is perfomred in a critical section and should be called with caution.
      */
     esp_err_t gdo_get_status(gdo_status_t *status);
+
+    /**
+     * @brief Requests the GDO firmware version; result delivered via GDO_CB_EVENT_FIRMWARE.
+     * @return ESP_OK on success.
+     */
+    esp_err_t gdo_get_firmware(void);
 
     /**
      * @brief Get the current obstruction pulse statistics.
@@ -455,21 +485,152 @@ extern "C"
     esp_err_t gdo_set_protocol(gdo_protocol_type_t protocol);
 
     /**
-     * @brief Sets the time to close in minutes
-     * @param time_to_close The time to close value.
+     * @brief Sets the time to close in seconds.
+     * @param time_to_close The time to close value in seconds.
      * @return ESP_OK on success, ESP_ERR_INVALID_ARG if the time is invalid,
      * ESP_ERR_INVALID_STATE if the time is out of range.
      */
     esp_err_t gdo_set_time_to_close(uint16_t time_to_close);
 
     /**
-     * @brief Cancel or toggle the time-to-close feature (Hold/Release TTC).
+     * @brief Cancel or toggle the time-to-close feature.
      * @return ESP_OK on success.
      */
     esp_err_t gdo_cancel_ttc(void);
 
+   /**
+     * @brief Enable the time-to-close feature.
+     * @return ESP_OK on success.
+     */
+    esp_err_t gdo_enable_ttc(void);
+
+    /**
+     * @brief Requests the configured current hold/release state and will trigger CMD_CANCEL_TTC with the appropriate response.
+     * @return ESP_OK on success.
+     */
+    esp_err_t gdo_get_ttc_state(void);
+
+    /**
+     * @brief Send a PAIR_3_RESP command with byte1 set to 0x01.
+     * @return ESP_OK on success.
+     */
+    esp_err_t gdo_send_pair_3_resp(void);
+
+    /**
+     * @brief Sets the TTC state in the local status.
+     * @param state The new TTC state to set.
+     * @return ESP_OK on success.
+     */
+    esp_err_t gdo_set_ttc_state(gdo_ttc_state_t state);
+
+    /**
+     * @brief Set motion-sensor auto-light control mode.
+     * @param enabled true to enable auto-light mode, false to disable.
+     * @return ESP_OK on success.
+     */
+    esp_err_t gdo_set_auto_light_mode(bool enabled);
+
+    /**
+     * @brief Sets the light timer duration in seconds.
+     * @param seconds The light timer duration in seconds.
+     * @return ESP_OK on success.
+     */
+    esp_err_t gdo_set_light_timer(uint16_t seconds);
+
+    /**
+     * @brief Encodes and queues a raw Security+ V2 command.
+     * @param command The command ID.
+     * @param nibble The command nibble, from 0x0 to 0xf.
+     * @param byte1 The first command byte.
+     * @param byte2 The second command byte.
+     * @return ESP_OK on success, ESP_ERR_INVALID_ARG for invalid input,
+     * ESP_ERR_INVALID_STATE if the driver is not initialized, ESP_ERR_NO_MEM
+     * if the transmit queue is full, or ESP_FAIL if encoding fails.
+     */
+    esp_err_t gdo_send_command(uint16_t command, uint8_t nibble,
+                               uint8_t byte1, uint8_t byte2);
+
+   /**
+     * @brief Enable the time-to-close feature.
+     * @return ESP_OK on success.
+     */
+    esp_err_t gdo_enable_ttc(void);
+
+    /**
+     * @brief Requests the configured TTC duration and current hold/release state.
+     * @return ESP_OK on success.
+     */
+    esp_err_t gdo_get_ttc_state(void);
+
+    /**
+     * @brief Set motion-sensor auto-light control mode.
+     * @param enabled true to enable auto-light mode, false to disable.
+     * @return ESP_OK on success.
+     */
+    esp_err_t gdo_set_auto_light_mode(bool enabled);
+
+    /**
+     * @brief Sets the light timer duration in seconds.
+     * @param seconds The light timer duration in seconds.
+     * @return ESP_OK on success.
+     */
+    esp_err_t gdo_set_light_timer(uint16_t seconds);
+
+    /**
+     * @brief Encodes and queues a raw Security+ V2 command.
+     * @param command The command ID.
+     * @param nibble The command nibble, from 0x0 to 0xf.
+     * @param byte1 The first command byte.
+     * @param byte2 The second command byte.
+     * @return ESP_OK on success, ESP_ERR_INVALID_ARG for invalid input,
+     * ESP_ERR_INVALID_STATE if the driver is not initialized, ESP_ERR_NO_MEM
+     * if the transmit queue is full, or ESP_FAIL if encoding fails.
+     */
+    esp_err_t gdo_send_command(uint16_t command, uint8_t nibble,
+                               uint8_t byte1, uint8_t byte2);
+
+    /**
+     * @brief Requests the configured TTC duration and current hold/release state.
+     * @return ESP_OK on success.
+     */
+    esp_err_t gdo_get_ttc_state(void);
+
+    /**
+     * @brief Toggle the time-to-close feature (Hold/Release TTC from wall panel).
+     * @return ESP_OK on success.
+     */
+    esp_err_t gdo_toggle_ttc(bool enable);
+
+    /**
+     * @brief Set motion-sensor auto-light control mode.
+     * @param enabled true to enable auto-light mode, false to disable.
+     * @return ESP_OK on success.
+     */
+    esp_err_t gdo_set_auto_light_mode(bool enabled);
+
+    /**
+     * @brief Sets the light timer duration in seconds.
+     * @param seconds The light timer duration in seconds.
+     * @return ESP_OK on success.
+     */
+    esp_err_t gdo_set_light_timer(uint16_t seconds);
+
+    /**
+     * @brief Encodes and queues a raw Security+ V2 command.
+     * @param command The command ID.
+     * @param nibble The command nibble, from 0x0 to 0xf.
+     * @param byte1 The first command byte.
+     * @param byte2 The second command byte.
+     * @return ESP_OK on success, ESP_ERR_INVALID_ARG for invalid input,
+     * ESP_ERR_INVALID_STATE if the driver is not initialized, ESP_ERR_NO_MEM
+     * if the transmit queue is full, or ESP_FAIL if encoding fails.
+     */
+    esp_err_t gdo_send_command(uint16_t command, uint8_t nibble,
+                               uint8_t byte1, uint8_t byte2);
+
     /**
      * @brief Sets the time the door takes to open from fully closed in milliseconds.
+     * If set to zero then recalibration will be triggered.
      * @param ms The time the door takes to open from fully closed in milliseconds.
      * @return ESP_OK on success, ESP_ERR_INVALID_ARG if the ms is invalid.
      */
@@ -477,6 +638,7 @@ extern "C"
 
     /**
      * @brief Sets the time the door takes to close from fully open in milliseconds.
+     * If set to zero then recalibration will be triggered.
      * @param ms The time the door takes to close from fully open in milliseconds.
      * @return ESP_OK on success, ESP_ERR_INVALID_ARG if the ms is invalid.
      */
@@ -500,6 +662,12 @@ extern "C"
      * @param obst_override true to enable override, false to disable.
      */
     void gdo_set_obst_override(bool obst_override);
+
+    /**
+     * @brief Enables or disables obstruction from status, some openers that do not have obstruction sensors connected.
+     * @param obst_status true to enable from status, false to disable.
+     */
+    void gdo_set_obst_from_status(bool obst_status);
 
     /************************************* VEHICLE Functions *****************************************/
 

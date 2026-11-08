@@ -15,6 +15,7 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+#define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE
 
 #include "gdo.h"
 #include "gdo_priv.h"
@@ -134,6 +135,10 @@ const char *cmd_to_string(gdo_command_t cmd)
 {
     switch (cmd)
     {
+    case GDO_CMD_GET_FIRMWARE:
+        return "GET_FIRMWARE";
+    case GDO_CMD_FIRMWARE:
+        return "FIRMWARE";
     case GDO_CMD_GET_STATUS:
         return "GET_STATUS";
     case GDO_CMD_STATUS:
@@ -144,6 +149,8 @@ const char *cmd_to_string(gdo_command_t cmd)
         return "OBST_2";
     case GDO_CMD_BATTERY_STATUS:
         return "BATTERY_STATUS";
+    case GDO_CMD_GET_BATTERY:
+        return "GET_BATTERY";
     case GDO_CMD_PAIR_3:
         return "PAIR_3";
     case GDO_CMD_PAIR_3_RESP:
@@ -160,6 +167,8 @@ const char *cmd_to_string(gdo_command_t cmd)
         return "MOTOR_ON";
     case GDO_CMD_MOTION:
         return "MOTION";
+    case GDO_CMD_SET_AUTO_LIGHT_MODE:
+        return "SET_AUTO_LIGHT_MODE";
     case GDO_CMD_GET_PAIRED_DEVICES:
         return "GET_PAIRED_DEVICES";
     case GDO_CMD_PAIRED_DEVICES:
@@ -180,6 +189,8 @@ const char *cmd_to_string(gdo_command_t cmd)
         return "UPDATE_TTC";
     case GDO_CMD_CANCEL_TTC:
         return "CANCEL_TTC";
+    case GDO_CMD_GET_TTC:
+        return "GET_TTC";
     case GDO_CMD_SET_TTC:
         return "SET_TTC";
     case GDO_CMD_GET_OPENINGS:
