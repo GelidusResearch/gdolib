@@ -2125,8 +2125,9 @@ static void decode_packet(uint8_t *packet)
     switch (byte1)
     {
       case 0x02:
-        new_state = GDO_TTC_STATE_ERROR;
+        new_state = GDO_TTC_STATE_OPENWAIT;
         event = GDO_CB_EVENT_TTC;
+        gdo_send_pair_3_resp();
         break;
       case 0x09:
         new_state = GDO_TTC_STATE_OFF;
@@ -3155,6 +3156,18 @@ esp_err_t gdo_enable_ttc(void)
 
   queue_event((gdo_event_t){GDO_EVENT_ENABLE_TTC});
   return err;
+}
+
+/**
+ * @brief Send a PAIR_3_RESP command with byte1 set to 0x01.
+ * @return ESP_OK on success.
+ */
+esp_err_t gdo_send_pair_3_resp(void)
+{
+  uint8_t byte1 = 0x01;
+  uint8_t byte2 = 0x00;
+  uint8_t nibble = 1;
+  return queue_command(GDO_CMD_PAIR_3_RESP, nibble, byte1, byte2);
 }
 
 /**
