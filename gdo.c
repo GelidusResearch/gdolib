@@ -2583,6 +2583,7 @@ static void update_door_state(const gdo_door_state_t door_state)
 {
   static uint32_t start_opening = 0;
   static uint32_t start_closing = 0;
+  const gdo_door_state_t previous_door_state = g_status.door;
 
   if (door_state == GDO_DOOR_STATE_OPENING && g_status.door == GDO_DOOR_STATE_CLOSED)
   {
@@ -2706,15 +2707,6 @@ static void update_door_state(const gdo_door_state_t door_state)
     }
   }
 
-  // Notify sync task if door state changed from UNKNOWN during V1 detection
-  // This includes UNKNOWN protocol (auto-detect) and V1 protocols
-  if (g_status.door == GDO_DOOR_STATE_UNKNOWN &&
-      (g_status.protocol == GDO_PROTOCOL_UNKNOWN || (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1)) &&
-      gdo_sync_task_handle)
-  {
-    xTaskNotifyGive(gdo_sync_task_handle);
-  }
-
   static int32_t previous_door_position = -1;
   static int32_t previous_door_target = -1;
   if ((door_state != g_status.door) || (previous_door_position != g_status.door_position) || (previous_door_target != g_status.door_target))
@@ -2728,6 +2720,16 @@ static void update_door_state(const gdo_door_state_t door_state)
   else
   {
     ESP_LOGV(TAG, "Door state: %s", gdo_door_state_to_string(door_state));
+  }
+
+  // Notify sync task once the door state is known during V1 detection, after g_status.door is updated
+  // so the sync task never reads a stale UNKNOWN state.
+  if (previous_door_state == GDO_DOOR_STATE_UNKNOWN &&
+      door_state != GDO_DOOR_STATE_UNKNOWN &&
+      (g_status.protocol == GDO_PROTOCOL_UNKNOWN || (g_status.protocol & GDO_PROTOCOL_SEC_PLUS_V1)) &&
+      gdo_sync_task_handle)
+  {
+    xTaskNotifyGive(gdo_sync_task_handle);
   }
 }
 
