@@ -2125,7 +2125,7 @@ static void decode_packet(uint8_t *packet)
     switch (byte1)
     {
       case 0x02:
-        new_state = GDO_TTC_STATE_OPENWAIT;
+        new_state = GDO_TTC_STATE_COUNTDOWN;
         event = GDO_CB_EVENT_TTC;
         gdo_send_pair_3_resp();
         break;
@@ -2138,7 +2138,7 @@ static void decode_packet(uint8_t *packet)
         event = GDO_CB_EVENT_HOLD_TTC;
         break;
       case 0x0B:
-        new_state = GDO_TTC_STATE_COUNTDOWN;
+        new_state = GDO_TTC_STATE_ALARM;
         event = GDO_CB_EVENT_UPDATE_TTC;
         break;
       case 0x0C:

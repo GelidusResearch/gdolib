@@ -99,10 +99,10 @@ extern "C"
     {
         GDO_TTC_STATE_OFF = 0,         // 0x09 - disabled via CANCEL_TTC
         GDO_TTC_STATE_REL = 1,         // 0x0A - released (countdown available)
-        GDO_TTC_STATE_COUNTDOWN = 2,   // 0x0B - countdown running
+        GDO_TTC_STATE_ALARM = 2,   // 0x0B - countdown running
         GDO_TTC_STATE_HOLD = 3,        // 0x0C - held (door waiting to close)
         GDO_TTC_STATE_ERROR = 4,       // 0x0E - error state (post-power-cycle)
-        GDO_TTC_STATE_OPENWAIT = 5,    // 0x02 - Open door wait state (awaiting response)
+        GDO_TTC_STATE_COUNTDOWN = 5,    // 0x02 - Open door wait state (awaiting response)
         GDO_TTC_STATE_MAX,
     } gdo_ttc_state_t;
 
