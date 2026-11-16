@@ -1321,7 +1321,7 @@ static void gdo_sync_task(void *arg)
         xQueueReset(gdo_event_queue);
 
         // Delay forever if there is a smart panel connected to allow it to come online and sync before we do anything.
-        ulTaskNotifyTake(pdTRUE, g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL ? portMAX_DELAY : pdMS_TO_TICKS(2500));
+        ulTaskNotifyTake(pdTRUE, g_status.protocol == GDO_PROTOCOL_SEC_PLUS_V1_WITH_SMART_PANEL ? portMAX_DELAY : pdMS_TO_TICKS(5000));
 
         if (g_status.door == GDO_DOOR_STATE_UNKNOWN) {
             ESP_LOGW(TAG, "V1 panel not found, trying emulation");
