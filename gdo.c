@@ -528,6 +528,10 @@ esp_err_t gdo_deinit(void)
   {
     goto done;
   }
+  // gpio_reset_pin() turns the pull-up on. TX held high for ~5 ms or more
+  // works the door on Sec+1.0, so pull it down instead.
+  gpio_pullup_dis(g_config.uart_tx_pin);
+  gpio_pulldown_en(g_config.uart_tx_pin);
 
   err = gpio_reset_pin(g_config.uart_rx_pin);
   if (err != ESP_OK)
