@@ -104,7 +104,11 @@ void app_main(void)
         .uart_tx_pin = 1,
         .uart_rx_pin = 2,
         .obst_in_pin = 5,
-        .obst_tp_pin = 0,
+        .obst_tp_pin = GPIO_NUM_NC,
+        .dc_open_pin = GPIO_NUM_NC,
+        .dc_close_pin = GPIO_NUM_NC,
+        .dc_discrete_open_pin = GPIO_NUM_NC,
+        .dc_discrete_close_pin = GPIO_NUM_NC,
     };
 
     gdo_init(&gdo_conf);
