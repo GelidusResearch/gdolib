@@ -138,11 +138,11 @@ static gdo_obstruction_stats_t obst_stats = {
     .count = 0,
     .pulses = 0,
     .last_pulse_micros = 0,
+    .sensor_active = false,
 };
 
-const static uint32_t OBST_CHECK_PERIOD = 250; // Milliseconds between checks for obstruction
-//const static uint32_t OBST_LOWER_LIMIT = 1;    // Number of pulses to consider clear state
-
+const static uint32_t OBST_CHECK_PERIOD = 100; // Milliseconds between checks for obstruction
+const static uint32_t OBST_LOWER_LIMIT = 3;    // Number of pulses to consider clear state
 
 typedef struct
 {
@@ -221,9 +221,9 @@ esp_err_t gdo_init(const gdo_config_t *config)
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << g_config.obst_in_pin),
         .mode = GPIO_MODE_INPUT,
-        .pull_up_en = g_config.obst_invert ? GPIO_PULLUP_DISABLE : GPIO_PULLUP_ENABLE,
-        .pull_down_en = g_config.obst_invert ? GPIO_PULLDOWN_ENABLE : GPIO_PULLDOWN_DISABLE,
-        .intr_type = g_config.obst_invert ? GPIO_INTR_POSEDGE : GPIO_INTR_NEGEDGE,
+        .pull_up_en = g_config.obst_invert ?  GPIO_PULLUP_ENABLE: GPIO_PULLUP_DISABLE,
+        .pull_down_en = g_config.obst_invert ? GPIO_PULLDOWN_DISABLE : GPIO_PULLDOWN_ENABLE,
+        .intr_type = g_config.obst_invert ? GPIO_INTR_NEGEDGE : GPIO_INTR_POSEDGE,
     };
 
     // Initialize the global obstruction stats
@@ -258,7 +258,7 @@ esp_err_t gdo_init(const gdo_config_t *config)
       return err;
     }
 
-    // Check the obstruction pulse counts every 100ms
+    // Check the obstruction pulse counts regularly
     err = esp_timer_start_periodic(obst_timer, OBST_CHECK_PERIOD * 1000);
     if (err != ESP_OK)
     {
@@ -715,12 +715,14 @@ esp_err_t gdo_get_obstruction_pulse_stats(gdo_obstruction_pulse_stats_t *stats, 
   stats->pulses = obst_stats.pulses;
   stats->current_pulse_count = obst_stats.count;
   stats->last_pulse_time_us = obst_stats.last_pulse_micros;
+  stats->sensor_active = obst_stats.sensor_active;
 
   // Clear counters if requested
   if (clear_counters) {
     obst_stats.pulses = 0;
     obst_stats.count = 0;
     obst_stats.last_pulse_micros = 0;
+    obst_stats.sensor_active = false;
   }
 
   portEXIT_CRITICAL(&obst_stats.mux);
@@ -1471,8 +1473,8 @@ static void IRAM_ATTR obst_isr_handler(void *arg)
 /****************************** TIMER CALLBACKS ************************************/
 
 /**
- * @brief Runs every ~50ms and checks the count of obstruction interrupts.
- * @details 3 or more interrupts in 250ms is considered clear, 0 with the pin low is asleep,
+ * @brief Runs periodically and checks the count of obstruction interrupts.
+ * @details pulsing the sensor interrupts is considered clear, 0 with the pin low is asleep,
  * and 0 with the pin high is obstructed.
  * When the obstruction state changes an event of GDO_EVENT_OBST is queued.
  */
@@ -1491,15 +1493,21 @@ static void obst_timer_cb(void *arg)
   portENTER_CRITICAL(&stats->mux);
   count_snapshot = stats->count;
   last_pulse_snapshot = stats->last_pulse_micros;
-  stats->count = 0;  // Reset count for next period
+  stats->count = 0; // Reset count for next period
   portEXIT_CRITICAL(&stats->mux);
 
-  if (count_snapshot > 3)
+  if (count_snapshot > OBST_LOWER_LIMIT)
   {
     // Track "now" (not 0) as the debounce baseline so a single noisy tick with
     // zero counted pulses right after a clear period can't be misread as having
     // been silent since boot, which would instantly exceed the 700ms obstructed
     // threshold below and cause a spurious obstructed->clear blip.
+    if (!stats->sensor_active)
+    {
+      // Switch to pin-based obstruction detection on multiple pulses.
+      stats->sensor_active = true;
+      ESP_LOGI(TAG, "Pin-based obstruction detection active (%d pulses)", count_snapshot);
+    }
     portENTER_CRITICAL(&stats->mux);
     stats->last_pulse_micros = micros_now;
     portEXIT_CRITICAL(&stats->mux);
@@ -1509,13 +1517,22 @@ static void obst_timer_cb(void *arg)
   {
     if (pin_low)
     {
+      if (!stats->sensor_active)
+      {
+        // Switch to pin-based obstruction detection on a change in the pin level.
+        stats->sensor_active = true;
+        ESP_LOGI(TAG, "Pin-based obstruction detection active (%d pulses)", count_snapshot);
+      }
       portENTER_CRITICAL(&stats->mux);
       stats->last_pulse_micros = micros_now;
       portEXIT_CRITICAL(&stats->mux);
       obs_state = GDO_OBSTRUCTION_STATE_CLEAR;
     }
-    else if (micros_now - last_pulse_snapshot > 700000)
+    else if (micros_now - last_pulse_snapshot > 700 * 1000)
     {
+      // Don't trust a high pin that has never changed - likely floating/stuck
+      if (!stats->sensor_active)
+        return;
       obs_state = GDO_OBSTRUCTION_STATE_OBSTRUCTED;
     }
   }
@@ -1974,8 +1991,10 @@ static void decode_v1_packet(uint8_t *packet)
   }
   else if (cmd == V1_CMD_OBSTRUCTION)
   {
-    if (g_config.obst_from_status)
+    if (g_config.obst_from_status || !obst_stats.sensor_active)
+    {
       update_obstruction_state(resp == 0 ? GDO_OBSTRUCTION_STATE_CLEAR : GDO_OBSTRUCTION_STATE_OBSTRUCTED);
+    }
   }
   else if (cmd == V1_CMD_TOGGLE_DOOR_PRESS)
   {
@@ -2035,7 +2054,7 @@ static void decode_packet(uint8_t *packet)
     update_light_state((gdo_light_state_t)((byte2 >> 1) & 1));
     update_lock_state((gdo_lock_state_t)(byte2 & 1));
     update_learn_state((gdo_learn_state_t)((byte2 >> 5) & 1));
-    if (g_config.obst_from_status)
+    if (g_config.obst_from_status || !obst_stats.sensor_active)
     {
       update_obstruction_state((gdo_obstruction_state_t)((byte1 >> 6) & 1));
     }

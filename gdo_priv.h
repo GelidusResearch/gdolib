@@ -206,10 +206,10 @@ extern "C"
 
     typedef struct
     {
-        int64_t sleep_micros;
         uint32_t count;
         uint32_t pulses;
         uint64_t last_pulse_micros;
+        bool sensor_active;
         portMUX_TYPE mux;
     } gdo_obstruction_stats_t;
 

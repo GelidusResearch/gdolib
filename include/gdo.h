@@ -170,6 +170,7 @@ extern "C"
         uint32_t current_pulse_count;  // Current pulse count in measurement window
         uint64_t last_pulse_time_us;   // Timestamp of last pulse (microseconds)
         uint32_t time_since_last_pulse_ms; // Time since last pulse in milliseconds
+        bool sensor_active;            // Whether the pin-based obstruction sensor is active
     } gdo_obstruction_pulse_stats_t;
 
     typedef struct
