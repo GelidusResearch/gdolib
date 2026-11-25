@@ -237,6 +237,13 @@ extern "C"
 
 #define GDO_PAIRED_DEVICE_COUNT_UNKNOWN 0xff
 
+#ifndef GDO_ALLOW_GPIO_NUM_0
+__attribute__((error("If you need GPIO_NUM_0, define GDO_ALLOW_GPIO_NUM_0 before including gdo.h, else use GPIO_NUM_NC to disable the pin")))
+gpio_num_t err_GPIO_NUM_0(void);
+
+#define GPIO_NUM_0 (err_GPIO_NUM_0())
+#endif
+
     /**
      * @brief Callback function for GDO events.
      * @param status The current status of the GDO.

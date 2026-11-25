@@ -169,15 +169,25 @@ esp_err_t gdo_init(const gdo_config_t *config)
 {
   esp_err_t err = ESP_OK;
 
-  if (!config || config->uart_num >= UART_NUM_MAX ||
-      config->uart_tx_pin >= GPIO_NUM_MAX ||
-      config->uart_rx_pin >= GPIO_NUM_MAX ||
-      config->obst_in_pin >= GPIO_NUM_MAX ||
-      config->obst_tp_pin >= GPIO_NUM_MAX ||
-      config->dc_open_pin >= GPIO_NUM_MAX ||
-      config->dc_close_pin >= GPIO_NUM_MAX ||
-      config->dc_discrete_open_pin >= GPIO_NUM_MAX ||
-      config->dc_discrete_close_pin >= GPIO_NUM_MAX)
+  if (!config)
+  {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+// We allow GPIO_NUM_NC for optional pins, indicating that the pin is disabled.
+#define GPIO_IS_VALID_OUTPUT_GPIO_OR_NC(pin) ((pin) == GPIO_NUM_NC || GPIO_IS_VALID_OUTPUT_GPIO(pin))
+#define GPIO_IS_VALID_GPIO_OR_NC(pin) ((pin) == GPIO_NUM_NC || GPIO_IS_VALID_GPIO(pin))
+
+  const bool gpio_pins_valid = GPIO_IS_VALID_OUTPUT_GPIO(config->uart_tx_pin) &&                  // required
+                               GPIO_IS_VALID_GPIO(config->uart_rx_pin) &&                         // required
+                               GPIO_IS_VALID_GPIO_OR_NC(config->obst_in_pin) &&                   // optional
+                               GPIO_IS_VALID_OUTPUT_GPIO_OR_NC(config->obst_tp_pin) &&
+                               GPIO_IS_VALID_GPIO_OR_NC(config->dc_open_pin) &&                   // optional
+                               GPIO_IS_VALID_GPIO_OR_NC(config->dc_close_pin) &&                  // optional
+                               GPIO_IS_VALID_OUTPUT_GPIO_OR_NC(config->dc_discrete_open_pin) &&   // optional
+                               GPIO_IS_VALID_OUTPUT_GPIO_OR_NC(config->dc_discrete_close_pin);    // optional
+
+  if (!gpio_pins_valid || config->uart_num >= UART_NUM_MAX)
   {
     return ESP_ERR_INVALID_ARG;
   }
@@ -188,6 +198,22 @@ esp_err_t gdo_init(const gdo_config_t *config)
   }
 
   g_config = *config;
+
+#ifndef GDO_ALLOW_GPIO_NUM_0
+  // If user has not explicitly allowed GPIO_NUM_0, treat it as GPIO_NUM_NC for optional pins.
+  if (g_config.obst_in_pin == 0)
+    g_config.obst_in_pin = GPIO_NUM_NC;
+  if (g_config.obst_tp_pin == 0)
+    g_config.obst_tp_pin = GPIO_NUM_NC;
+  if (g_config.dc_open_pin == 0)
+    g_config.dc_open_pin = GPIO_NUM_NC;
+  if (g_config.dc_close_pin == 0)
+    g_config.dc_close_pin = GPIO_NUM_NC;
+  if (g_config.dc_discrete_open_pin == 0)
+    g_config.dc_discrete_open_pin = GPIO_NUM_NC;
+  if (g_config.dc_discrete_close_pin == 0)
+    g_config.dc_discrete_close_pin = GPIO_NUM_NC;
+#endif // GDO_ALLOW_GPIO_NUM_0
 
   // Initialize a default dry contact debounce if not set.
   if (g_config.dc_debounce_ms == 0)
@@ -213,7 +239,7 @@ esp_err_t gdo_init(const gdo_config_t *config)
     return err;
   }
 
-  if (!g_config.obst_from_status && g_config.obst_in_pin > 0)
+  if (!g_config.obst_from_status && g_config.obst_in_pin != GPIO_NUM_NC)
   {
     // obst_invert flips the idle/pull direction and the edge we interrupt on so an
     // inverted obstruction sensor (idle low, pulses high) is treated the same as the
@@ -265,13 +291,13 @@ esp_err_t gdo_init(const gdo_config_t *config)
       return err;
     }
   }
-  else if (g_status.protocol == GDO_PROTOCOL_DRY_CONTACT && g_config.obst_in_pin <= 0 && !g_config.obst_from_status)
+  else if (g_status.protocol == GDO_PROTOCOL_DRY_CONTACT && g_config.obst_in_pin == GPIO_NUM_NC && !g_config.obst_from_status)
   {
     // dry contact protocol requires either obstruction sensor input pin or obst_from_status
     ESP_LOGE(TAG, "Failed to initialize GDOLIB... dry contact protocol requires either obstruction sensor GPIO pin or obst_from_status enabled");
     return ESP_FAIL;
   }
-  else if (g_config.dc_close_pin > 0 || g_config.dc_open_pin > 0)
+  else if (g_config.dc_close_pin != GPIO_NUM_NC || g_config.dc_open_pin != GPIO_NUM_NC)
   {
     // we need to install gpio isr service for later use
     err = gpio_install_isr_service(GDO_ISR_PRIORITY);
@@ -330,8 +356,8 @@ esp_err_t gdo_init(const gdo_config_t *config)
     // Need to setup the pins we will use for dry-contact output
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << g_config.uart_tx_pin) |
-                        ((g_config.dc_discrete_open_pin) ? (1ULL << g_config.dc_discrete_open_pin) : 0) |
-                        ((g_config.dc_discrete_close_pin) ? (1ULL << g_config.dc_discrete_close_pin) : 0),
+                        ((g_config.dc_discrete_open_pin != GPIO_NUM_NC) ? (1ULL << g_config.dc_discrete_open_pin) : 0) |
+                        ((g_config.dc_discrete_close_pin != GPIO_NUM_NC) ? (1ULL << g_config.dc_discrete_close_pin) : 0),
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -346,9 +372,9 @@ esp_err_t gdo_init(const gdo_config_t *config)
     }
     // Ensure TX pin (relay drive) starts LOW (MOSFET off) before any pulse.
     gpio_set_level(g_config.uart_tx_pin, 0);
-    if (g_config.dc_discrete_open_pin)
+    if (g_config.dc_discrete_open_pin != GPIO_NUM_NC)
       gpio_set_level(g_config.dc_discrete_open_pin, 0);
-    if (g_config.dc_discrete_close_pin)
+    if (g_config.dc_discrete_close_pin != GPIO_NUM_NC)
       gpio_set_level(g_config.dc_discrete_close_pin, 0);
   }
   else
@@ -356,8 +382,8 @@ esp_err_t gdo_init(const gdo_config_t *config)
     // dry contact does not require serial comms
     // Begin in secplus protocol v1 as its the easiest to detect.
     // Reset pins to a known state before configuring the UART peripheral
-    gpio_reset_pin((gpio_num_t)g_config.uart_tx_pin);
-    gpio_reset_pin((gpio_num_t)g_config.uart_rx_pin);
+    gpio_reset_pin(g_config.uart_tx_pin);
+    gpio_reset_pin(g_config.uart_rx_pin);
 
     uart_config_t uart_config = {
         .baud_rate = 1200,
@@ -589,7 +615,7 @@ esp_err_t gdo_start(gdo_event_callback_t event_callback, void *user_arg)
     }
   }
 
-  if (g_config.dc_open_pin > 0)
+  if (g_config.dc_open_pin != GPIO_NUM_NC)
   {
     // Test for > 0 even though zero is valid GPIO pin, but for GDO use case, we require pin to be > 0
     static gdo_contact_t info;
@@ -606,7 +632,7 @@ esp_err_t gdo_start(gdo_event_callback_t event_callback, void *user_arg)
     }
   }
 
-  if (g_config.dc_close_pin > 0)
+  if (g_config.dc_close_pin != GPIO_NUM_NC)
   {
     // Test for > 0 even though zero is valid GPIO pin, but for GDO use case, we require pin to be > 0
     static gdo_contact_t info;
@@ -2797,12 +2823,12 @@ inline static esp_err_t send_door_action_dc(gdo_door_action_t action)
   switch (action)
   {
   case GDO_DOOR_ACTION_OPEN:
-    if (g_config.dc_discrete_open_pin)
+    if (g_config.dc_discrete_open_pin != GPIO_NUM_NC)
       gdo_dc_toggle_pin(g_config.dc_discrete_open_pin);
     gdo_dc_toggle_pin(g_config.uart_tx_pin);
     break;
   case GDO_DOOR_ACTION_CLOSE:
-    if (g_config.dc_discrete_close_pin)
+    if (g_config.dc_discrete_close_pin != GPIO_NUM_NC)
       gdo_dc_toggle_pin(g_config.dc_discrete_close_pin);
     gdo_dc_toggle_pin(g_config.uart_tx_pin);
     break;
