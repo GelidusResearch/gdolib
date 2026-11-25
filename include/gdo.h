@@ -193,7 +193,6 @@ extern "C"
         bool obst_override;                   // Used when the door opener has no obstruction sensors.
         bool obst_from_status;                // Obstruction state derived from status response
         bool tof_timer_active;                // ToF interval timer active
-        bool obst_test_pulse_timer_active;    // Obstruction test pulse output pin timer active
         bool auto_light_enabled;              // Motion-sensor auto-light control enabled
         uint16_t openings;                    // Number of openings
         uint16_t ttc_seconds;                 // Time to close in seconds
@@ -208,7 +207,6 @@ extern "C"
         uint32_t client_id;                   // Client ID
         uint32_t rolling_code;                // Rolling code
         uint32_t tof_timer_usecs;             // ToF interval timer microseconds used to triger TOF events
-        uint32_t obst_test_pulse_timer_usecs; // Obstruction test pulse output pin timer microseconds
         uint16_t motion_timeout_ms;           // Motion detection timeout duration in milliseconds
         uint8_t fw_major;                     // GDO firmware major version
         uint8_t fw_minor;                     // GDO firmware minor version
@@ -223,7 +221,6 @@ extern "C"
         gpio_num_t uart_tx_pin;           // UART TX pin
         gpio_num_t uart_rx_pin;           // UART RX pin
         gpio_num_t obst_in_pin;           // Obstruction input pin
-        gpio_num_t obst_tp_pin;           // Obstruction test pulse pin
         gpio_num_t rf_tx_pin;             // RF TX pin
         gpio_num_t rf_rx_pin;             // RF RX pin
         gpio_num_t dc_open_pin;           // dry contact open sensor input pin
@@ -686,15 +683,6 @@ gpio_num_t err_GPIO_NUM_0(void);
      * @return ESP_OK on success, ESP_ERR_INVALID_ARG if the interval is less than 1000
      */
     esp_err_t gdo_set_tof_timer(uint32_t interval, bool enabled);
-
-    /**
-     * @brief Set the obst test pulse interval timer value and enable/disable flag
-     * @param interval the interval time in micro seconds
-     * @param enabled the flag to enable or disable the timer on gdo_start
-     * @return ESP_OK on success, ESP_ERR_INVALID_ARG if the interval is less than 1000
-     * @note Init config->obst_tp_pin with the desired GPIO pin
-    */
-    esp_err_t gdo_set_obst_test_pulse_timer(uint32_t interval, bool enabled);
 
     /**
      * @brief Sets the vehicle parked threshold in cm
